@@ -67,7 +67,7 @@ Observability is end-to-end: OpenTelemetry tracing across the .NET and Go servic
 
 ## Architecture
 
-![alt text](ticketing_platform_architecture.png)
+![alt text](docs/ticketing_platform_architecture.png)
 
 ## Tech stack
 
