@@ -1,11 +1,13 @@
 package main
 
 import (
+	"log"
 	"net/http"
+	"nubrank/internal/payments"
+	"time"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"log"
-	"time"
 )
 
 // mount
@@ -28,6 +30,9 @@ func (app *application) mount() http.Handler {
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("hello world"))
 	})
+
+	paymentHandler := payments.NewHandler(nil)
+	r.Get("/payments", paymentHandler.ListPayments)
 
 	return r
 }

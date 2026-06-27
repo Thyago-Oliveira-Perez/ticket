@@ -1,7 +1,7 @@
 package main
 
 import (
-	"slog/slog"
+	"log/slog"
 	"os"
 )
 
@@ -20,7 +20,7 @@ func main () {
 	slog.SetDefault(logger)
 
 	if err := api.run(api.mount()) ; err != nil {
-		slog.Printf("server has failed to start", "error", err)
+		slog.Error("server has failed to start", "error", err)
 		os.Exit(1)
 	}
 }
