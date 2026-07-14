@@ -31,6 +31,7 @@ func (app *application) mount() http.Handler {
 		w.Write([]byte("hello world"))
 	})
 
+	productService := payments.NewService()
 	paymentHandler := payments.NewHandler(nil)
 	r.Get("/payments", paymentHandler.ListPayments)
 
