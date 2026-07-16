@@ -17,10 +17,7 @@ func NewHandler(service Service) *handler {
 }
 
 func (h *handler) ListPayments(w http.ResponseWriter, r *http.Request) {
-	// 1. call repository
-	// 2. return JSON in an HTTP response
-
-	err := h.service.ListPayments(r.Context())
+	payments, err := h.service.ListPayments(r.Context())
 
 	if err != nil {
 		log.Println(err)
@@ -28,7 +25,5 @@ func (h *handler) ListPayments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payments := []string{"1", "2"}
-	
 	json.Write(w, http.StatusOK, payments)
 }

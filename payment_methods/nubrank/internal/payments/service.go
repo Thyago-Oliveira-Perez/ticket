@@ -3,17 +3,17 @@ package payments
 import "context"
 
 type Service interface {
-	ListPayments(ctx context.Context) (error)
+	ListPayments(ctx context.Context) ([]Payment, error)
 }
 
 type svc struct {
-	// repository
+	repo Repository
 }
 
-func NewService() Service {
-	return &svc {}
+func NewService(repo Repository) Service {
+	return &svc{repo: repo}
 }
 
-func (s *svc) ListPayments (ctx context.Context) error {
-	return nil
+func (s *svc) ListPayments(ctx context.Context) ([]Payment, error) {
+	return s.repo.ListPayments(ctx)
 }

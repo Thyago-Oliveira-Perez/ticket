@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // mount
@@ -31,8 +32,9 @@ func (app *application) mount() http.Handler {
 		w.Write([]byte("hello world"))
 	})
 
-	productService := payments.NewService()
-	paymentHandler := payments.NewHandler(nil)
+	paymentRepo := payments.NewPostgresRepository(app.db)
+	paymentService := payments.NewService(paymentRepo)
+	paymentHandler := payments.NewHandler(paymentService)
 	r.Get("/payments", paymentHandler.ListPayments)
 
 	return r
@@ -56,8 +58,8 @@ func (app *application) run(h http.Handler) error {
 
 type application struct {
 	config config
+	db     *pgxpool.Pool
 	// logger
-	// db driver
 }
 
 type config struct {
