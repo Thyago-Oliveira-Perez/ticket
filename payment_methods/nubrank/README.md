@@ -2,23 +2,32 @@
 
 A payment method service written in **Go**, part of the `payment_methods` module of the ticketing platform.
 
-> ⚠️ **Work in progress.** The API is being scaffolded — currently it boots an HTTP server with a chi router, base middlewares and a single health/`hello world` route. Database, handlers and business logic are still to come.
+> ⚠️ **Work in progress.** Boots an HTTP server with a chi router, base middlewares, and a `/payments` route backed by Postgres. Business logic beyond listing payments is still to come.
 
 ## Tech stack
 
 - **Go** `1.26`
 - [chi/v5](https://github.com/go-chi/chi) — HTTP router & middlewares
-- [gin-gonic/gin](https://github.com/gin-gonic/gin) — (declared dependency)
-- [mongo-driver/v2](https://go.mongodb.org/mongo-driver) — MongoDB driver (planned persistence)
+- [pgx/v5](https://github.com/jackc/pgx) — Postgres driver & connection pool
+- [golang-migrate/v4](https://github.com/golang-migrate/migrate) — schema migrations, embedded into the binary and run automatically on boot
 
 ## Folder structure
 
 ```
 nubrank/
-├── cmd/                # application entrypoint
-│   ├── main.go         # builds config + application, starts the server
-│   └── api.go          # router mount, middlewares, HTTP server setup
-├── internal/           # private application code (handlers, store, services) — WIP
+├── cmd/                          # application entrypoint
+│   ├── main.go                   # builds config, runs migrations, opens the db pool, starts the server
+│   └── api.go                    # router mount, middlewares, HTTP server setup
+├── internal/
+│   ├── database/
+│   │   ├── migrate.go            # runs embedded migrations against Postgres
+│   │   └── migrations/           # numbered up/down SQL migration files
+│   ├── json/                     # JSON response helper
+│   └── payments/
+│       ├── handlers.go           # HTTP handlers
+│       ├── service.go            # business logic
+│       ├── repository.go         # Payment model + Repository interface
+│       └── postgres_repository.go # Postgres implementation of Repository
 ├── go.mod
 ├── go.sum
 └── README.md
@@ -29,19 +38,23 @@ nubrank/
 ### Prerequisites
 
 - Go `1.26+` installed ([download](https://go.dev/dl/))
+- A running Postgres instance (see `docker-compose.yml` at the repo root, service `postgresql`)
 
 ### Run locally
 
 ```bash
 # from the nubrank/ directory
-go run ./cmd
+DB_DSN="postgres://nubrank:secret@localhost:5432/nubrank?sslmode=disable" go run ./cmd
 ```
 
-The server starts on **`:8080`** by default:
+On boot the service applies any pending migrations against `DB_DSN`, then starts the HTTP server on **`:8080`** by default:
 
 ```bash
 curl http://localhost:8080/
 # -> hello world
+
+curl http://localhost:8080/payments
+# -> [] or a JSON array of payments
 ```
 
 ## Useful commands
@@ -59,11 +72,15 @@ curl http://localhost:8080/
 
 ## Configuration
 
-Configuration currently lives in `cmd/main.go` (`config` / `dbConfig` structs):
+Configuration currently lives in `cmd/main.go` (`config` / `dbConfig` structs), populated from environment variables:
 
-| Setting | Default | Description |
-| --- | --- | --- |
-| `addr` | `:8080` | Address the HTTP server listens on |
-| `db.dsn` | `""` | Database connection string (not wired up yet) |
+| Setting | Env var | Default | Description |
+| --- | --- | --- | --- |
+| `addr` | `ADDR` | `:8080` | Address the HTTP server listens on |
+| `db.dsn` | `DB_DSN` | `""` | Postgres connection string, e.g. `postgres://user:pass@host:5432/db?sslmode=disable` |
 
-> Environment-variable based config is planned.
+## Migrations
+
+Migrations live in `internal/database/migrations/` using the `{version}_{name}.{up,down}.sql` naming convention (golang-migrate). They're embedded into the binary via `go:embed` and applied automatically at startup — no separate migration step or CLI needed to run the service.
+
+To add a new migration, create a new `NNNNNN_description.up.sql` / `.down.sql` pair with the next sequential version number.
