@@ -19,6 +19,7 @@ nubrank/
 │   ├── main.go                   # builds config, runs migrations, opens the db pool, starts the server
 │   └── api.go                    # router mount, middlewares, HTTP server setup
 ├── internal/
+│   ├── chaos/                    # failure-injection middleware (latency, random errors, rate limiting)
 │   ├── database/
 │   │   ├── migrate.go            # runs embedded migrations against Postgres
 │   │   └── migrations/           # numbered up/down SQL migration files
@@ -55,6 +56,11 @@ curl http://localhost:8080/
 
 curl http://localhost:8080/payments
 # -> [] or a JSON array of payments
+
+curl -X POST http://localhost:8080/payments \
+  -H "Content-Type: application/json" \
+  -d '{"merchant_id":"...","customer_id":"...","payment_method_id":"...","amount_minor":5000,"currency":"BRL"}'
+# -> 201 with the created payment, or 400 on invalid input
 ```
 
 ## Useful commands
@@ -78,6 +84,15 @@ Configuration currently lives in `cmd/main.go` (`config` / `dbConfig` structs), 
 | --- | --- | --- | --- |
 | `addr` | `ADDR` | `:8080` | Address the HTTP server listens on |
 | `db.dsn` | `DB_DSN` | `""` | Postgres connection string, e.g. `postgres://user:pass@host:5432/db?sslmode=disable` |
+| `chaos.LatencyMin` | `CHAOS_LATENCY_MIN_MS` | `0` | Lower bound (ms) of injected per-request latency |
+| `chaos.LatencyMax` | `CHAOS_LATENCY_MAX_MS` | `0` | Upper bound (ms) of injected per-request latency. `0` disables latency injection |
+| `chaos.ErrorRate` | `CHAOS_ERROR_RATE` | `0` | Probability (`0`-`1`) that a request fails with a `500` before reaching its handler. `0` disables it |
+| `chaos.RateLimitRPS` | `CHAOS_RATE_LIMIT_RPS` | `0` | Requests/sec allowed per client IP. `0` disables rate limiting |
+| `chaos.RateLimitBurst` | `CHAOS_RATE_LIMIT_BURST` | RPS rounded up | Token bucket burst size per client IP |
+
+## Failure injection
+
+nubrank plays the part of a hostile external payment provider (see the root `README.md`), so it can be configured to misbehave via the `CHAOS_*` env vars above: adding random latency, failing a fraction of requests with `500`s, and rate-limiting per client IP with a `429`. All three are implemented as middleware in `internal/chaos/` and are no-ops unless configured. Rate limiting runs first (so throttled clients don't pay the injected latency), then latency, then the random failure check.
 
 ## Migrations
 

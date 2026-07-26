@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"net/http"
+	"nubrank/internal/chaos"
 	"nubrank/internal/payments"
 	"time"
 
@@ -27,6 +28,13 @@ func (app *application) mount() http.Handler {
 	processing should be stopped.
 	*/
 	r.Use(middleware.Timeout(60 * time.Second))
+
+	// chaos: simulate a hostile upstream provider (rate limiting first, so
+	// throttled clients don't pay the injected latency, then latency, then
+	// a chance of outright failure).
+	r.Use(chaos.RateLimit(app.config.chaos))
+	r.Use(chaos.Latency(app.config.chaos))
+	r.Use(chaos.RandomError(app.config.chaos))
 
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("hello world"))
@@ -66,6 +74,7 @@ type application struct {
 type config struct {
 	addr string
 	db dbConfig
+	chaos chaos.Config
 }
 
 type dbConfig struct {
