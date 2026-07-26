@@ -5,6 +5,10 @@ import (
 	"time"
 )
 
+const (
+	StatusApproved = "approved"
+)
+
 type Payment struct {
 	ID              string
 	MerchantID      string
@@ -19,4 +23,5 @@ type Payment struct {
 
 type Repository interface {
 	ListPayments(ctx context.Context) ([]Payment, error)
+	CreatePayment(ctx context.Context, p Payment) (Payment, error)
 }

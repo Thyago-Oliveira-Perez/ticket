@@ -50,3 +50,28 @@ func (r *postgresRepository) ListPayments(ctx context.Context) ([]Payment, error
 
 	return payments, nil
 }
+
+func (r *postgresRepository) CreatePayment(ctx context.Context, p Payment) (Payment, error) {
+	row := r.db.QueryRow(ctx, `
+		INSERT INTO payments (merchant_id, customer_id, payment_method_id, amount_minor, currency, status)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, created_at, updated_at
+	`, p.MerchantID, p.CustomerID, p.PaymentMethodID, p.AmountMinor, p.Currency, p.Status)
+
+	var created Payment
+	if err := row.Scan(
+		&created.ID,
+		&created.MerchantID,
+		&created.CustomerID,
+		&created.PaymentMethodID,
+		&created.AmountMinor,
+		&created.Currency,
+		&created.Status,
+		&created.CreatedAt,
+		&created.UpdatedAt,
+	); err != nil {
+		return Payment{}, fmt.Errorf("insert payment: %w", err)
+	}
+
+	return created, nil
+}

@@ -36,6 +36,7 @@ func (app *application) mount() http.Handler {
 	paymentService := payments.NewService(paymentRepo)
 	paymentHandler := payments.NewHandler(paymentService)
 	r.Get("/payments", paymentHandler.ListPayments)
+	r.Post("/payments", paymentHandler.CreatePayment)
 
 	return r
 }
