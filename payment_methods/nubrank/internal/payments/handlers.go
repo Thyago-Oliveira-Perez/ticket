@@ -37,6 +37,7 @@ type createPaymentRequest struct {
 	PaymentMethodID string `json:"payment_method_id"`
 	AmountMinor     int64  `json:"amount_minor"`
 	Currency        string `json:"currency"`
+	WebhookURL      string `json:"webhook_url,omitempty"`
 }
 
 func (h *handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
@@ -52,6 +53,7 @@ func (h *handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 		PaymentMethodID: req.PaymentMethodID,
 		AmountMinor:     req.AmountMinor,
 		Currency:        req.Currency,
+		WebhookURL:      req.WebhookURL,
 	})
 	if err != nil {
 		if errors.Is(err, ErrValidation) {

@@ -9,6 +9,7 @@ import (
 
 	"nubrank/internal/chaos"
 	"nubrank/internal/database"
+	"nubrank/internal/webhook"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -29,6 +30,11 @@ func main () {
 			ErrorRate:      envOrFloat("CHAOS_ERROR_RATE", 0),
 			RateLimitRPS:   envOrFloat("CHAOS_RATE_LIMIT_RPS", 0),
 			RateLimitBurst: envOrInt("CHAOS_RATE_LIMIT_BURST", 0),
+		},
+		webhook: webhook.Config{
+			LatencyMin:    time.Duration(envOrInt("CHAOS_WEBHOOK_LATENCY_MIN_MS", 0)) * time.Millisecond,
+			LatencyMax:    time.Duration(envOrInt("CHAOS_WEBHOOK_LATENCY_MAX_MS", 0)) * time.Millisecond,
+			DuplicateRate: envOrFloat("CHAOS_WEBHOOK_DUPLICATE_RATE", 0),
 		},
 	}
 

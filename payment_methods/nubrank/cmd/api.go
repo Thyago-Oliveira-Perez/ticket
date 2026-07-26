@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"nubrank/internal/chaos"
 	"nubrank/internal/payments"
+	"nubrank/internal/webhook"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -41,7 +42,8 @@ func (app *application) mount() http.Handler {
 	})
 
 	paymentRepo := payments.NewPostgresRepository(app.db)
-	paymentService := payments.NewService(paymentRepo)
+	webhookSender := webhook.NewSender(app.config.webhook)
+	paymentService := payments.NewService(paymentRepo, webhookSender)
 	paymentHandler := payments.NewHandler(paymentService)
 	r.Get("/payments", paymentHandler.ListPayments)
 	r.Post("/payments", paymentHandler.CreatePayment)
@@ -75,6 +77,7 @@ type config struct {
 	addr string
 	db dbConfig
 	chaos chaos.Config
+	webhook webhook.Config
 }
 
 type dbConfig struct {

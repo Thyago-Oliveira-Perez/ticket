@@ -24,6 +24,7 @@ nubrank/
 │   │   ├── migrate.go            # runs embedded migrations against Postgres
 │   │   └── migrations/           # numbered up/down SQL migration files
 │   ├── json/                     # JSON response helper
+│   ├── webhook/                  # outbound webhook delivery (latency, duplicate delivery)
 │   └── payments/
 │       ├── handlers.go           # HTTP handlers
 │       ├── service.go            # business logic
@@ -59,8 +60,9 @@ curl http://localhost:8080/payments
 
 curl -X POST http://localhost:8080/payments \
   -H "Content-Type: application/json" \
-  -d '{"merchant_id":"...","customer_id":"...","payment_method_id":"...","amount_minor":5000,"currency":"BRL"}'
+  -d '{"merchant_id":"...","customer_id":"...","payment_method_id":"...","amount_minor":5000,"currency":"BRL","webhook_url":"https://example.com/hook"}'
 # -> 201 with the created payment, or 400 on invalid input
+# webhook_url is optional; if set, a payment.approved event is POSTed to it asynchronously
 ```
 
 ## Useful commands
@@ -89,10 +91,23 @@ Configuration currently lives in `cmd/main.go` (`config` / `dbConfig` structs), 
 | `chaos.ErrorRate` | `CHAOS_ERROR_RATE` | `0` | Probability (`0`-`1`) that a request fails with a `500` before reaching its handler. `0` disables it |
 | `chaos.RateLimitRPS` | `CHAOS_RATE_LIMIT_RPS` | `0` | Requests/sec allowed per client IP. `0` disables rate limiting |
 | `chaos.RateLimitBurst` | `CHAOS_RATE_LIMIT_BURST` | RPS rounded up | Token bucket burst size per client IP |
+| `webhook.LatencyMin` | `CHAOS_WEBHOOK_LATENCY_MIN_MS` | `0` | Lower bound (ms) of delay before each webhook delivery attempt |
+| `webhook.LatencyMax` | `CHAOS_WEBHOOK_LATENCY_MAX_MS` | `0` | Upper bound (ms) of delay before each webhook delivery attempt. `0` disables the delay |
+| `webhook.DuplicateRate` | `CHAOS_WEBHOOK_DUPLICATE_RATE` | `0` | Probability (`0`-`1`) that a webhook event is delivered a second time with the same id and body. `0` disables it |
 
 ## Failure injection
 
 nubrank plays the part of a hostile external payment provider (see the root `README.md`), so it can be configured to misbehave via the `CHAOS_*` env vars above: adding random latency, failing a fraction of requests with `500`s, and rate-limiting per client IP with a `429`. All three are implemented as middleware in `internal/chaos/` and are no-ops unless configured. Rate limiting runs first (so throttled clients don't pay the injected latency), then latency, then the random failure check.
+
+## Webhooks
+
+If a `POST /payments` request includes a `webhook_url`, nubrank asynchronously delivers a `payment.approved` event to it after the payment is created — the HTTP response isn't delayed waiting on delivery. Delivery lives in `internal/webhook/` and is deliberately unreliable, matching the chaos theme above:
+
+- **Latency** — each delivery attempt is delayed per `CHAOS_WEBHOOK_LATENCY_*`.
+- **Duplicate delivery** — per `CHAOS_WEBHOOK_DUPLICATE_RATE`, the identical event (same id, same body) may be sent twice, simulating a provider retry. Consumers are expected to dedupe on the event's `id` (also sent as the `X-Webhook-Event-Id` header).
+- **Out-of-order delivery** — not simulated by any special-cased logic; it falls out naturally from independent random latency per delivery across concurrent payments. Each event carries a monotonically increasing `sequence` number so a consumer can detect reordering if it cares to.
+
+Delivery failures (network errors, non-2xx responses) are logged and not retried beyond the duplicate-rate mechanism.
 
 ## Migrations
 
