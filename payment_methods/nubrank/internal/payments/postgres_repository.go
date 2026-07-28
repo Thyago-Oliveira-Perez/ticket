@@ -17,7 +17,7 @@ func NewPostgresRepository(db *pgxpool.Pool) Repository {
 
 func (r *postgresRepository) ListPayments(ctx context.Context) ([]Payment, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, created_at, updated_at
+		SELECT uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, created_at, updated_at
 		FROM payments
 		ORDER BY created_at DESC
 	`)
@@ -37,6 +37,7 @@ func (r *postgresRepository) ListPayments(ctx context.Context) ([]Payment, error
 			&p.AmountMinor,
 			&p.Currency,
 			&p.Status,
+			&p.DeclineReason,
 			&p.CreatedAt,
 			&p.UpdatedAt,
 		); err != nil {
@@ -53,10 +54,10 @@ func (r *postgresRepository) ListPayments(ctx context.Context) ([]Payment, error
 
 func (r *postgresRepository) CreatePayment(ctx context.Context, p Payment) (Payment, error) {
 	row := r.db.QueryRow(ctx, `
-		INSERT INTO payments (merchant_id, customer_id, payment_method_id, amount_minor, currency, status)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, created_at, updated_at
-	`, p.MerchantID, p.CustomerID, p.PaymentMethodID, p.AmountMinor, p.Currency, p.Status)
+		INSERT INTO payments (merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, created_at, updated_at
+	`, p.MerchantID, p.CustomerID, p.PaymentMethodID, p.AmountMinor, p.Currency, p.Status, p.DeclineReason)
 
 	var created Payment
 	if err := row.Scan(
@@ -67,6 +68,7 @@ func (r *postgresRepository) CreatePayment(ctx context.Context, p Payment) (Paym
 		&created.AmountMinor,
 		&created.Currency,
 		&created.Status,
+		&created.DeclineReason,
 		&created.CreatedAt,
 		&created.UpdatedAt,
 	); err != nil {

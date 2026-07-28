@@ -7,6 +7,7 @@ import (
 
 const (
 	StatusApproved = "approved"
+	StatusDeclined = "declined"
 )
 
 type Payment struct {
@@ -17,8 +18,10 @@ type Payment struct {
 	AmountMinor     int64
 	Currency        string
 	Status          string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// DeclineReason is set when Status is StatusDeclined and nil otherwise.
+	DeclineReason *string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 type Repository interface {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"net/url"
 
 	"github.com/google/uuid"
@@ -29,8 +30,8 @@ type CreatePaymentInput struct {
 	PaymentMethodID string
 	AmountMinor     int64
 	Currency        string
-	// WebhookURL, if set, receives a payment.approved event once the
-	// payment is created. Optional.
+	// WebhookURL, if set, receives a payment.approved or payment.declined
+	// event once the payment is created. Optional.
 	WebhookURL string
 }
 
@@ -39,13 +40,46 @@ type Service interface {
 	CreatePayment(ctx context.Context, in CreatePaymentInput) (Payment, error)
 }
 
+// DeclineConfig controls the probability that an otherwise-valid payment is
+// declined, simulating a real gateway's business-level rejections (as
+// opposed to the chaos package's transport-level failures).
+type DeclineConfig struct {
+	// Rate is the probability, in [0, 1], that a payment is declined.
+	// Disabled (payments are always approved) when Rate <= 0.
+	Rate float64
+}
+
+// declineReasons lists the reasons a simulated decline may carry. Picked
+// uniformly at random; not meant to reflect real-world decline frequency.
+var declineReasons = []string{
+	"insufficient_funds",
+	"card_expired",
+	"fraud_suspected",
+	"issuer_unavailable",
+}
+
 type svc struct {
 	repo     Repository
 	webhooks WebhookSender
+	decline  DeclineConfig
+	// rollDecline and pickReason are overridden in tests for determinism;
+	// they default to real randomness via NewService.
+	rollDecline func() bool
+	pickReason  func() string
 }
 
-func NewService(repo Repository, webhooks WebhookSender) Service {
-	return &svc{repo: repo, webhooks: webhooks}
+func NewService(repo Repository, webhooks WebhookSender, decline DeclineConfig) Service {
+	return &svc{
+		repo:     repo,
+		webhooks: webhooks,
+		decline:  decline,
+		rollDecline: func() bool {
+			return decline.Rate > 0 && rand.Float64() < decline.Rate
+		},
+		pickReason: func() string {
+			return declineReasons[rand.IntN(len(declineReasons))]
+		},
+	}
 }
 
 func (s *svc) ListPayments(ctx context.Context) ([]Payment, error) {
@@ -65,6 +99,11 @@ func (s *svc) CreatePayment(ctx context.Context, in CreatePaymentInput) (Payment
 		Currency:        in.Currency,
 		Status:          StatusApproved,
 	}
+	if s.rollDecline() {
+		reason := s.pickReason()
+		p.Status = StatusDeclined
+		p.DeclineReason = &reason
+	}
 
 	created, err := s.repo.CreatePayment(ctx, p)
 	if err != nil {
@@ -72,11 +111,15 @@ func (s *svc) CreatePayment(ctx context.Context, in CreatePaymentInput) (Payment
 	}
 
 	if in.WebhookURL != "" {
+		eventType := "payment.approved"
+		if created.Status == StatusDeclined {
+			eventType = "payment.declined"
+		}
 		// Detach from the request context's cancellation (the HTTP response
 		// has already been decided) but keep any request-scoped values.
 		webhookCtx := context.WithoutCancel(ctx)
 		go func() {
-			if err := s.webhooks.Send(webhookCtx, in.WebhookURL, "payment.approved", created); err != nil {
+			if err := s.webhooks.Send(webhookCtx, in.WebhookURL, eventType, created); err != nil {
 				log.Printf("webhook: send failed for payment %s: %v", created.ID, err)
 			}
 		}()

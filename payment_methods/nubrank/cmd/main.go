@@ -9,6 +9,7 @@ import (
 
 	"nubrank/internal/chaos"
 	"nubrank/internal/database"
+	"nubrank/internal/payments"
 	"nubrank/internal/webhook"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -35,6 +36,9 @@ func main () {
 			LatencyMin:    time.Duration(envOrInt("CHAOS_WEBHOOK_LATENCY_MIN_MS", 0)) * time.Millisecond,
 			LatencyMax:    time.Duration(envOrInt("CHAOS_WEBHOOK_LATENCY_MAX_MS", 0)) * time.Millisecond,
 			DuplicateRate: envOrFloat("CHAOS_WEBHOOK_DUPLICATE_RATE", 0),
+		},
+		paymentDecline: payments.DeclineConfig{
+			Rate: envOrFloat("PAYMENT_DECLINE_RATE", 0),
 		},
 	}
 

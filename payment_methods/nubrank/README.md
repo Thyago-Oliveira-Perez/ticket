@@ -61,8 +61,8 @@ curl http://localhost:8080/payments
 curl -X POST http://localhost:8080/payments \
   -H "Content-Type: application/json" \
   -d '{"merchant_id":"...","customer_id":"...","payment_method_id":"...","amount_minor":5000,"currency":"BRL","webhook_url":"https://example.com/hook"}'
-# -> 201 with the created payment, or 400 on invalid input
-# webhook_url is optional; if set, a payment.approved event is POSTed to it asynchronously
+# -> 201 with the created payment (status "approved" or "declined"), or 400 on invalid input
+# webhook_url is optional; if set, a payment.approved or payment.declined event is POSTed to it asynchronously
 ```
 
 ## Useful commands
@@ -94,14 +94,17 @@ Configuration currently lives in `cmd/main.go` (`config` / `dbConfig` structs), 
 | `webhook.LatencyMin` | `CHAOS_WEBHOOK_LATENCY_MIN_MS` | `0` | Lower bound (ms) of delay before each webhook delivery attempt |
 | `webhook.LatencyMax` | `CHAOS_WEBHOOK_LATENCY_MAX_MS` | `0` | Upper bound (ms) of delay before each webhook delivery attempt. `0` disables the delay |
 | `webhook.DuplicateRate` | `CHAOS_WEBHOOK_DUPLICATE_RATE` | `0` | Probability (`0`-`1`) that a webhook event is delivered a second time with the same id and body. `0` disables it |
+| `paymentDecline.Rate` | `PAYMENT_DECLINE_RATE` | `0` | Probability (`0`-`1`) that an otherwise-valid payment is declined instead of approved. `0` disables it — every payment is approved |
 
 ## Failure injection
 
 nubrank plays the part of a hostile external payment provider (see the root `README.md`), so it can be configured to misbehave via the `CHAOS_*` env vars above: adding random latency, failing a fraction of requests with `500`s, and rate-limiting per client IP with a `429`. All three are implemented as middleware in `internal/chaos/` and are no-ops unless configured. Rate limiting runs first (so throttled clients don't pay the injected latency), then latency, then the random failure check.
 
+Separately from transport-level chaos, `PAYMENT_DECLINE_RATE` simulates business-level rejection: a fraction of otherwise-valid `POST /payments` requests still return `201`, but with `status: "declined"` and a `decline_reason` (`insufficient_funds`, `card_expired`, `fraud_suspected`, or `issuer_unavailable`, chosen at random) instead of `status: "approved"`. This isn't a chaos-middleware failure — it's nubrank's own decision, exercising the caller's decline-handling path the same way a real gateway would.
+
 ## Webhooks
 
-If a `POST /payments` request includes a `webhook_url`, nubrank asynchronously delivers a `payment.approved` event to it after the payment is created — the HTTP response isn't delayed waiting on delivery. Delivery lives in `internal/webhook/` and is deliberately unreliable, matching the chaos theme above:
+If a `POST /payments` request includes a `webhook_url`, nubrank asynchronously delivers a `payment.approved` or `payment.declined` event to it (matching the created payment's outcome) after the payment is created — the HTTP response isn't delayed waiting on delivery. Delivery lives in `internal/webhook/` and is deliberately unreliable, matching the chaos theme above:
 
 - **Latency** — each delivery attempt is delayed per `CHAOS_WEBHOOK_LATENCY_*`.
 - **Duplicate delivery** — per `CHAOS_WEBHOOK_DUPLICATE_RATE`, the identical event (same id, same body) may be sent twice, simulating a provider retry. Consumers are expected to dedupe on the event's `id` (also sent as the `X-Webhook-Event-Id` header).

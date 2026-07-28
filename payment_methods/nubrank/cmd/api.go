@@ -43,7 +43,7 @@ func (app *application) mount() http.Handler {
 
 	paymentRepo := payments.NewPostgresRepository(app.db)
 	webhookSender := webhook.NewSender(app.config.webhook)
-	paymentService := payments.NewService(paymentRepo, webhookSender)
+	paymentService := payments.NewService(paymentRepo, webhookSender, app.config.paymentDecline)
 	paymentHandler := payments.NewHandler(paymentService)
 	r.Get("/payments", paymentHandler.ListPayments)
 	r.Post("/payments", paymentHandler.CreatePayment)
@@ -78,6 +78,7 @@ type config struct {
 	db dbConfig
 	chaos chaos.Config
 	webhook webhook.Config
+	paymentDecline payments.DeclineConfig
 }
 
 type dbConfig struct {
