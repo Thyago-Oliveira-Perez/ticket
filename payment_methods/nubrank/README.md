@@ -60,9 +60,12 @@ curl http://localhost:8080/payments
 
 curl -X POST http://localhost:8080/payments \
   -H "Content-Type: application/json" \
+  -H "Idempotency-Key: retry-key-1" \
   -d '{"merchant_id":"...","customer_id":"...","payment_method_id":"...","amount_minor":5000,"currency":"BRL","webhook_url":"https://example.com/hook"}'
 # -> 201 with the created payment (status "approved" or "declined"), or 400 on invalid input
 # webhook_url is optional; if set, a payment.approved or payment.declined event is POSTed to it asynchronously
+# Idempotency-Key is optional; a retried request with the same key (scoped per merchant_id)
+# returns the original payment instead of creating a new one, and does not re-send its webhook
 ```
 
 ## Useful commands
@@ -111,6 +114,10 @@ If a `POST /payments` request includes a `webhook_url`, nubrank asynchronously d
 - **Out-of-order delivery** — not simulated by any special-cased logic; it falls out naturally from independent random latency per delivery across concurrent payments. Each event carries a monotonically increasing `sequence` number so a consumer can detect reordering if it cares to.
 
 Delivery failures (network errors, non-2xx responses) are logged and not retried beyond the duplicate-rate mechanism.
+
+## Idempotency
+
+`POST /payments` accepts an optional `Idempotency-Key` header. A second request with the same key for the same `merchant_id` returns the payment created by the first request instead of creating a duplicate, and does not re-send its webhook — this is what lets a caller safely retry a request that timed out or failed before it saw the response. The key is scoped per merchant, so two merchants may reuse the same key value independently. Uniqueness is enforced at the database with a partial unique index on `(merchant_id, idempotency_key)`; a race between two concurrent requests carrying the same key is resolved there, and the loser looks up and returns the winner's payment rather than erroring.
 
 ## Migrations
 

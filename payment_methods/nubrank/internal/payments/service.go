@@ -33,6 +33,11 @@ type CreatePaymentInput struct {
 	// WebhookURL, if set, receives a payment.approved or payment.declined
 	// event once the payment is created. Optional.
 	WebhookURL string
+	// IdempotencyKey, if set, makes payment creation safe to retry: a
+	// second CreatePayment call for the same (merchant_id,
+	// idempotency_key) pair returns the original payment instead of
+	// creating a new one, and does not re-send its webhook. Optional.
+	IdempotencyKey string
 }
 
 type Service interface {
@@ -91,6 +96,18 @@ func (s *svc) CreatePayment(ctx context.Context, in CreatePaymentInput) (Payment
 		return Payment{}, err
 	}
 
+	if in.IdempotencyKey != "" {
+		existing, err := s.repo.GetByIdempotencyKey(ctx, in.MerchantID, in.IdempotencyKey)
+		if err == nil {
+			// Replay of a prior request: return the original payment
+			// as-is, without creating a new one or re-sending its webhook.
+			return existing, nil
+		}
+		if !errors.Is(err, ErrPaymentNotFound) {
+			return Payment{}, err
+		}
+	}
+
 	p := Payment{
 		MerchantID:      in.MerchantID,
 		CustomerID:      in.CustomerID,
@@ -98,6 +115,9 @@ func (s *svc) CreatePayment(ctx context.Context, in CreatePaymentInput) (Payment
 		AmountMinor:     in.AmountMinor,
 		Currency:        in.Currency,
 		Status:          StatusApproved,
+	}
+	if in.IdempotencyKey != "" {
+		p.IdempotencyKey = &in.IdempotencyKey
 	}
 	if s.rollDecline() {
 		reason := s.pickReason()
@@ -107,6 +127,11 @@ func (s *svc) CreatePayment(ctx context.Context, in CreatePaymentInput) (Payment
 
 	created, err := s.repo.CreatePayment(ctx, p)
 	if err != nil {
+		if errors.Is(err, ErrIdempotencyKeyConflict) {
+			// Lost the race to a concurrent request with the same key;
+			// return whatever it created instead of erroring out.
+			return s.repo.GetByIdempotencyKey(ctx, in.MerchantID, in.IdempotencyKey)
+		}
 		return Payment{}, err
 	}
 
