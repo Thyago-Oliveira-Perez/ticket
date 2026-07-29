@@ -7,6 +7,8 @@ import (
 	"net/http"
 
 	nubrankjson "nubrank/internal/json"
+
+	"github.com/go-chi/chi/v5"
 )
 
 type handler struct {
@@ -29,6 +31,27 @@ func (h *handler) ListPayments(w http.ResponseWriter, r *http.Request) {
 	}
 
 	nubrankjson.Write(w, http.StatusOK, payments)
+}
+
+func (h *handler) GetPayment(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	payment, err := h.service.GetPayment(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, ErrValidation) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if errors.Is(err, ErrPaymentNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		log.Println(err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	nubrankjson.Write(w, http.StatusOK, payment)
 }
 
 type createPaymentRequest struct {

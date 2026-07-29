@@ -47,6 +47,7 @@ func (app *application) mount() http.Handler {
 	paymentHandler := payments.NewHandler(paymentService)
 	r.Get("/payments", paymentHandler.ListPayments)
 	r.Post("/payments", paymentHandler.CreatePayment)
+	r.Get("/payments/{id}", paymentHandler.GetPayment)
 
 	return r
 }

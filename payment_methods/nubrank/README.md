@@ -66,6 +66,9 @@ curl -X POST http://localhost:8080/payments \
 # webhook_url is optional; if set, a payment.approved or payment.declined event is POSTed to it asynchronously
 # Idempotency-Key is optional; a retried request with the same key (scoped per merchant_id)
 # returns the original payment instead of creating a new one, and does not re-send its webhook
+
+curl http://localhost:8080/payments/11111111-1111-1111-1111-111111111111
+# -> 200 with the payment, 400 if the id isn't a valid UUID, 404 if no payment has that id
 ```
 
 ## Useful commands

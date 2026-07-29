@@ -43,4 +43,7 @@ type Repository interface {
 	// GetByIdempotencyKey looks up a payment by (merchant_id,
 	// idempotency_key). Returns ErrPaymentNotFound if none exists.
 	GetByIdempotencyKey(ctx context.Context, merchantID, idempotencyKey string) (Payment, error)
+	// GetByID looks up a payment by its id. Returns ErrPaymentNotFound if
+	// none exists.
+	GetByID(ctx context.Context, id string) (Payment, error)
 }

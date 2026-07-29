@@ -43,6 +43,10 @@ type CreatePaymentInput struct {
 type Service interface {
 	ListPayments(ctx context.Context) ([]Payment, error)
 	CreatePayment(ctx context.Context, in CreatePaymentInput) (Payment, error)
+	// GetPayment looks up a payment by id. Returns an error wrapping
+	// ErrValidation if id isn't a valid UUID, or ErrPaymentNotFound if no
+	// payment with that id exists.
+	GetPayment(ctx context.Context, id string) (Payment, error)
 }
 
 // DeclineConfig controls the probability that an otherwise-valid payment is
@@ -89,6 +93,13 @@ func NewService(repo Repository, webhooks WebhookSender, decline DeclineConfig) 
 
 func (s *svc) ListPayments(ctx context.Context) ([]Payment, error) {
 	return s.repo.ListPayments(ctx)
+}
+
+func (s *svc) GetPayment(ctx context.Context, id string) (Payment, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return Payment{}, fmt.Errorf("%w: id must be a valid UUID", ErrValidation)
+	}
+	return s.repo.GetByID(ctx, id)
 }
 
 func (s *svc) CreatePayment(ctx context.Context, in CreatePaymentInput) (Payment, error) {

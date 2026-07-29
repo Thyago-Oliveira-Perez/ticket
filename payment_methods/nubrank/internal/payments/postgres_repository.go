@@ -91,6 +91,36 @@ func (r *postgresRepository) CreatePayment(ctx context.Context, p Payment) (Paym
 	return created, nil
 }
 
+func (r *postgresRepository) GetByID(ctx context.Context, id string) (Payment, error) {
+	row := r.db.QueryRow(ctx, `
+		SELECT uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, idempotency_key, created_at, updated_at
+		FROM payments
+		WHERE uuid = $1
+	`, id)
+
+	var p Payment
+	if err := row.Scan(
+		&p.ID,
+		&p.MerchantID,
+		&p.CustomerID,
+		&p.PaymentMethodID,
+		&p.AmountMinor,
+		&p.Currency,
+		&p.Status,
+		&p.DeclineReason,
+		&p.IdempotencyKey,
+		&p.CreatedAt,
+		&p.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Payment{}, ErrPaymentNotFound
+		}
+		return Payment{}, fmt.Errorf("get payment by id: %w", err)
+	}
+
+	return p, nil
+}
+
 func (r *postgresRepository) GetByIdempotencyKey(ctx context.Context, merchantID, idempotencyKey string) (Payment, error) {
 	row := r.db.QueryRow(ctx, `
 		SELECT uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, idempotency_key, created_at, updated_at

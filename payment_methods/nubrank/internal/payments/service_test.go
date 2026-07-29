@@ -2,8 +2,11 @@ package payments
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 type fakeRepository struct {
@@ -27,7 +30,7 @@ func (f *fakeRepository) CreatePayment(ctx context.Context, p Payment) (Payment,
 			}
 		}
 	}
-	p.ID = "fake-id"
+	p.ID = uuid.NewString()
 	f.payments = append(f.payments, p)
 	return p, nil
 }
@@ -37,6 +40,17 @@ func (f *fakeRepository) GetByIdempotencyKey(ctx context.Context, merchantID, id
 	defer f.mu.Unlock()
 	for _, p := range f.payments {
 		if p.MerchantID == merchantID && p.IdempotencyKey != nil && *p.IdempotencyKey == idempotencyKey {
+			return p, nil
+		}
+	}
+	return Payment{}, ErrPaymentNotFound
+}
+
+func (f *fakeRepository) GetByID(ctx context.Context, id string) (Payment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.payments {
+		if p.ID == id {
 			return p, nil
 		}
 	}
@@ -228,5 +242,40 @@ func TestCreatePayment_InvalidInput_ReturnsValidationError(t *testing.T) {
 	in.AmountMinor = 0
 	if _, err := s.CreatePayment(context.Background(), in); err == nil {
 		t.Fatal("expected an error for zero amount, got nil")
+	}
+}
+
+func TestGetPayment_ExistingID_ReturnsPayment(t *testing.T) {
+	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{})
+
+	created, err := s.CreatePayment(context.Background(), validInput())
+	if err != nil {
+		t.Fatalf("CreatePayment returned error: %v", err)
+	}
+
+	got, err := s.GetPayment(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetPayment returned error: %v", err)
+	}
+	if got.ID != created.ID {
+		t.Fatalf("expected payment id %q, got %q", created.ID, got.ID)
+	}
+}
+
+func TestGetPayment_UnknownID_ReturnsNotFound(t *testing.T) {
+	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{})
+
+	_, err := s.GetPayment(context.Background(), "11111111-1111-1111-1111-111111111111")
+	if !errors.Is(err, ErrPaymentNotFound) {
+		t.Fatalf("expected ErrPaymentNotFound, got %v", err)
+	}
+}
+
+func TestGetPayment_InvalidID_ReturnsValidationError(t *testing.T) {
+	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{})
+
+	_, err := s.GetPayment(context.Background(), "not-a-uuid")
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("expected ErrValidation, got %v", err)
 	}
 }
