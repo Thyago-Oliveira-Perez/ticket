@@ -24,7 +24,7 @@ func NewPostgresRepository(db *pgxpool.Pool) Repository {
 
 func (r *postgresRepository) ListPayments(ctx context.Context) ([]Payment, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, idempotency_key, created_at, updated_at
+		SELECT uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, idempotency_key, refunded_at, created_at, updated_at
 		FROM payments
 		ORDER BY created_at DESC
 	`)
@@ -46,6 +46,7 @@ func (r *postgresRepository) ListPayments(ctx context.Context) ([]Payment, error
 			&p.Status,
 			&p.DeclineReason,
 			&p.IdempotencyKey,
+			&p.RefundedAt,
 			&p.CreatedAt,
 			&p.UpdatedAt,
 		); err != nil {
@@ -64,7 +65,7 @@ func (r *postgresRepository) CreatePayment(ctx context.Context, p Payment) (Paym
 	row := r.db.QueryRow(ctx, `
 		INSERT INTO payments (merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, idempotency_key)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, idempotency_key, created_at, updated_at
+		RETURNING uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, idempotency_key, refunded_at, created_at, updated_at
 	`, p.MerchantID, p.CustomerID, p.PaymentMethodID, p.AmountMinor, p.Currency, p.Status, p.DeclineReason, p.IdempotencyKey)
 
 	var created Payment
@@ -78,6 +79,7 @@ func (r *postgresRepository) CreatePayment(ctx context.Context, p Payment) (Paym
 		&created.Status,
 		&created.DeclineReason,
 		&created.IdempotencyKey,
+		&created.RefundedAt,
 		&created.CreatedAt,
 		&created.UpdatedAt,
 	); err != nil {
@@ -93,7 +95,7 @@ func (r *postgresRepository) CreatePayment(ctx context.Context, p Payment) (Paym
 
 func (r *postgresRepository) GetByID(ctx context.Context, id string) (Payment, error) {
 	row := r.db.QueryRow(ctx, `
-		SELECT uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, idempotency_key, created_at, updated_at
+		SELECT uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, idempotency_key, refunded_at, created_at, updated_at
 		FROM payments
 		WHERE uuid = $1
 	`, id)
@@ -109,6 +111,7 @@ func (r *postgresRepository) GetByID(ctx context.Context, id string) (Payment, e
 		&p.Status,
 		&p.DeclineReason,
 		&p.IdempotencyKey,
+		&p.RefundedAt,
 		&p.CreatedAt,
 		&p.UpdatedAt,
 	); err != nil {
@@ -121,9 +124,41 @@ func (r *postgresRepository) GetByID(ctx context.Context, id string) (Payment, e
 	return p, nil
 }
 
+func (r *postgresRepository) RefundPayment(ctx context.Context, id string) (Payment, error) {
+	row := r.db.QueryRow(ctx, `
+		UPDATE payments
+		SET status = $2, refunded_at = now(), updated_at = now()
+		WHERE uuid = $1 AND status = $3
+		RETURNING uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, idempotency_key, refunded_at, created_at, updated_at
+	`, id, StatusRefunded, StatusApproved)
+
+	var p Payment
+	if err := row.Scan(
+		&p.ID,
+		&p.MerchantID,
+		&p.CustomerID,
+		&p.PaymentMethodID,
+		&p.AmountMinor,
+		&p.Currency,
+		&p.Status,
+		&p.DeclineReason,
+		&p.IdempotencyKey,
+		&p.RefundedAt,
+		&p.CreatedAt,
+		&p.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Payment{}, ErrRefundNotApplied
+		}
+		return Payment{}, fmt.Errorf("refund payment: %w", err)
+	}
+
+	return p, nil
+}
+
 func (r *postgresRepository) GetByIdempotencyKey(ctx context.Context, merchantID, idempotencyKey string) (Payment, error) {
 	row := r.db.QueryRow(ctx, `
-		SELECT uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, idempotency_key, created_at, updated_at
+		SELECT uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, idempotency_key, refunded_at, created_at, updated_at
 		FROM payments
 		WHERE merchant_id = $1 AND idempotency_key = $2
 	`, merchantID, idempotencyKey)
@@ -139,6 +174,7 @@ func (r *postgresRepository) GetByIdempotencyKey(ctx context.Context, merchantID
 		&p.Status,
 		&p.DeclineReason,
 		&p.IdempotencyKey,
+		&p.RefundedAt,
 		&p.CreatedAt,
 		&p.UpdatedAt,
 	); err != nil {

@@ -16,6 +16,14 @@ import (
 // right HTTP status.
 var ErrValidation = errors.New("validation error")
 
+// ErrPaymentAlreadyRefunded is returned by RefundPayment when the payment
+// has already been refunded.
+var ErrPaymentAlreadyRefunded = errors.New("payment already refunded")
+
+// ErrPaymentNotApproved is returned by RefundPayment when the payment isn't
+// in StatusApproved (e.g. it was declined) and so can't be refunded.
+var ErrPaymentNotApproved = errors.New("payment is not approved and cannot be refunded")
+
 // WebhookSender delivers a domain event to a caller-supplied URL. Defined
 // here (rather than depending on the webhook package's concrete type) so
 // this package doesn't need to import it — the webhook package's Sender
@@ -40,6 +48,12 @@ type CreatePaymentInput struct {
 	IdempotencyKey string
 }
 
+type RefundInput struct {
+	// WebhookURL, if set, receives a payment.refunded event once the
+	// payment is refunded. Optional.
+	WebhookURL string
+}
+
 type Service interface {
 	ListPayments(ctx context.Context) ([]Payment, error)
 	CreatePayment(ctx context.Context, in CreatePaymentInput) (Payment, error)
@@ -47,6 +61,12 @@ type Service interface {
 	// ErrValidation if id isn't a valid UUID, or ErrPaymentNotFound if no
 	// payment with that id exists.
 	GetPayment(ctx context.Context, id string) (Payment, error)
+	// RefundPayment transitions an approved payment to StatusRefunded.
+	// Returns an error wrapping ErrValidation if id isn't a valid UUID,
+	// ErrPaymentNotFound if no payment with that id exists,
+	// ErrPaymentAlreadyRefunded if it was already refunded, or
+	// ErrPaymentNotApproved if it isn't currently approved (e.g. declined).
+	RefundPayment(ctx context.Context, id string, in RefundInput) (Payment, error)
 }
 
 // DeclineConfig controls the probability that an otherwise-valid payment is
@@ -100,6 +120,45 @@ func (s *svc) GetPayment(ctx context.Context, id string) (Payment, error) {
 		return Payment{}, fmt.Errorf("%w: id must be a valid UUID", ErrValidation)
 	}
 	return s.repo.GetByID(ctx, id)
+}
+
+func (s *svc) RefundPayment(ctx context.Context, id string, in RefundInput) (Payment, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return Payment{}, fmt.Errorf("%w: id must be a valid UUID", ErrValidation)
+	}
+	if err := validateWebhookURL(in.WebhookURL); err != nil {
+		return Payment{}, err
+	}
+
+	refunded, err := s.repo.RefundPayment(ctx, id)
+	if err != nil {
+		if !errors.Is(err, ErrRefundNotApplied) {
+			return Payment{}, err
+		}
+		// The conditional update matched no row; re-fetch to tell a missing
+		// payment apart from one that just isn't refundable right now.
+		existing, getErr := s.repo.GetByID(ctx, id)
+		if getErr != nil {
+			return Payment{}, getErr
+		}
+		if existing.Status == StatusRefunded {
+			return Payment{}, ErrPaymentAlreadyRefunded
+		}
+		return Payment{}, ErrPaymentNotApproved
+	}
+
+	if in.WebhookURL != "" {
+		// Detach from the request context's cancellation (the HTTP response
+		// has already been decided) but keep any request-scoped values.
+		webhookCtx := context.WithoutCancel(ctx)
+		go func() {
+			if err := s.webhooks.Send(webhookCtx, in.WebhookURL, "payment.refunded", refunded); err != nil {
+				log.Printf("webhook: send failed for payment %s: %v", refunded.ID, err)
+			}
+		}()
+	}
+
+	return refunded, nil
 }
 
 func (s *svc) CreatePayment(ctx context.Context, in CreatePaymentInput) (Payment, error) {
@@ -180,12 +239,17 @@ func validateCreatePaymentInput(in CreatePaymentInput) error {
 	if len(in.Currency) != 3 {
 		return fmt.Errorf("%w: currency must be a 3-letter ISO 4217 code", ErrValidation)
 	}
-	if in.WebhookURL != "" {
-		u, err := url.ParseRequestURI(in.WebhookURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
-			return fmt.Errorf("%w: webhook_url must be a valid http(s) URL", ErrValidation)
-		}
-	}
 
+	return validateWebhookURL(in.WebhookURL)
+}
+
+func validateWebhookURL(webhookURL string) error {
+	if webhookURL == "" {
+		return nil
+	}
+	u, err := url.ParseRequestURI(webhookURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return fmt.Errorf("%w: webhook_url must be a valid http(s) URL", ErrValidation)
+	}
 	return nil
 }

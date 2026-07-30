@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -55,6 +56,24 @@ func (f *fakeRepository) GetByID(ctx context.Context, id string) (Payment, error
 		}
 	}
 	return Payment{}, ErrPaymentNotFound
+}
+
+func (f *fakeRepository) RefundPayment(ctx context.Context, id string) (Payment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, p := range f.payments {
+		if p.ID != id {
+			continue
+		}
+		if p.Status != StatusApproved {
+			return Payment{}, ErrRefundNotApplied
+		}
+		now := time.Now()
+		f.payments[i].Status = StatusRefunded
+		f.payments[i].RefundedAt = &now
+		return f.payments[i], nil
+	}
+	return Payment{}, ErrRefundNotApplied
 }
 
 type capturedWebhook struct {
@@ -277,5 +296,101 @@ func TestGetPayment_InvalidID_ReturnsValidationError(t *testing.T) {
 	_, err := s.GetPayment(context.Background(), "not-a-uuid")
 	if !errors.Is(err, ErrValidation) {
 		t.Fatalf("expected ErrValidation, got %v", err)
+	}
+}
+
+func TestRefundPayment_ApprovedPayment_Refunds(t *testing.T) {
+	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{})
+
+	created, err := s.CreatePayment(context.Background(), validInput())
+	if err != nil {
+		t.Fatalf("CreatePayment returned error: %v", err)
+	}
+
+	refunded, err := s.RefundPayment(context.Background(), created.ID, RefundInput{})
+	if err != nil {
+		t.Fatalf("RefundPayment returned error: %v", err)
+	}
+	if refunded.Status != StatusRefunded {
+		t.Fatalf("expected status %q, got %q", StatusRefunded, refunded.Status)
+	}
+	if refunded.RefundedAt == nil {
+		t.Fatal("expected RefundedAt to be set")
+	}
+}
+
+func TestRefundPayment_AlreadyRefunded_ReturnsAlreadyRefundedError(t *testing.T) {
+	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{})
+
+	created, err := s.CreatePayment(context.Background(), validInput())
+	if err != nil {
+		t.Fatalf("CreatePayment returned error: %v", err)
+	}
+	if _, err := s.RefundPayment(context.Background(), created.ID, RefundInput{}); err != nil {
+		t.Fatalf("first RefundPayment returned error: %v", err)
+	}
+
+	_, err = s.RefundPayment(context.Background(), created.ID, RefundInput{})
+	if !errors.Is(err, ErrPaymentAlreadyRefunded) {
+		t.Fatalf("expected ErrPaymentAlreadyRefunded, got %v", err)
+	}
+}
+
+func TestRefundPayment_DeclinedPayment_ReturnsNotApprovedError(t *testing.T) {
+	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{Rate: 1})
+
+	created, err := s.CreatePayment(context.Background(), validInput())
+	if err != nil {
+		t.Fatalf("CreatePayment returned error: %v", err)
+	}
+	if created.Status != StatusDeclined {
+		t.Fatalf("expected test setup to produce a declined payment, got %q", created.Status)
+	}
+
+	_, err = s.RefundPayment(context.Background(), created.ID, RefundInput{})
+	if !errors.Is(err, ErrPaymentNotApproved) {
+		t.Fatalf("expected ErrPaymentNotApproved, got %v", err)
+	}
+}
+
+func TestRefundPayment_UnknownID_ReturnsNotFound(t *testing.T) {
+	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{})
+
+	_, err := s.RefundPayment(context.Background(), "11111111-1111-1111-1111-111111111111", RefundInput{})
+	if !errors.Is(err, ErrPaymentNotFound) {
+		t.Fatalf("expected ErrPaymentNotFound, got %v", err)
+	}
+}
+
+func TestRefundPayment_InvalidID_ReturnsValidationError(t *testing.T) {
+	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{})
+
+	_, err := s.RefundPayment(context.Background(), "not-a-uuid", RefundInput{})
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("expected ErrValidation, got %v", err)
+	}
+}
+
+func TestRefundPayment_SendsRefundedWebhook(t *testing.T) {
+	webhooks := newFakeWebhookSender()
+	s := NewService(&fakeRepository{}, webhooks, DeclineConfig{})
+
+	created, err := s.CreatePayment(context.Background(), validInput())
+	if err != nil {
+		t.Fatalf("CreatePayment returned error: %v", err)
+	}
+
+	if _, err := s.RefundPayment(context.Background(), created.ID, RefundInput{WebhookURL: "https://example.com/hook"}); err != nil {
+		t.Fatalf("RefundPayment returned error: %v", err)
+	}
+
+	<-webhooks.done
+	webhooks.mu.Lock()
+	defer webhooks.mu.Unlock()
+	if len(webhooks.sent) != 1 {
+		t.Fatalf("expected exactly 1 webhook delivery, got %d", len(webhooks.sent))
+	}
+	if webhooks.sent[0].eventType != "payment.refunded" {
+		t.Fatalf("expected event type payment.refunded, got %s", webhooks.sent[0].eventType)
 	}
 }

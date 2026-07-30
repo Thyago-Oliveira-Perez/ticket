@@ -3,6 +3,7 @@ package payments
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 
@@ -90,4 +91,36 @@ func (h *handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	nubrankjson.Write(w, http.StatusCreated, payment)
+}
+
+type refundPaymentRequest struct {
+	WebhookURL string `json:"webhook_url,omitempty"`
+}
+
+func (h *handler) RefundPayment(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	var req refundPaymentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	payment, err := h.service.RefundPayment(r.Context(), id, RefundInput{WebhookURL: req.WebhookURL})
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrValidation):
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		case errors.Is(err, ErrPaymentNotFound):
+			http.Error(w, err.Error(), http.StatusNotFound)
+		case errors.Is(err, ErrPaymentAlreadyRefunded), errors.Is(err, ErrPaymentNotApproved):
+			http.Error(w, err.Error(), http.StatusConflict)
+		default:
+			log.Println(err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	nubrankjson.Write(w, http.StatusOK, payment)
 }

@@ -69,6 +69,12 @@ curl -X POST http://localhost:8080/payments \
 
 curl http://localhost:8080/payments/11111111-1111-1111-1111-111111111111
 # -> 200 with the payment, 400 if the id isn't a valid UUID, 404 if no payment has that id
+
+curl -X POST http://localhost:8080/payments/11111111-1111-1111-1111-111111111111/refund \
+  -H "Content-Type: application/json" \
+  -d '{"webhook_url":"https://example.com/hook"}'
+# -> 200 with the refunded payment (status "refunded"), or 409 if it was already refunded
+#    or was never approved (e.g. declined). webhook_url is optional; a body isn't required at all.
 ```
 
 ## Useful commands
@@ -121,6 +127,16 @@ Delivery failures (network errors, non-2xx responses) are logged and not retried
 ## Idempotency
 
 `POST /payments` accepts an optional `Idempotency-Key` header. A second request with the same key for the same `merchant_id` returns the payment created by the first request instead of creating a duplicate, and does not re-send its webhook — this is what lets a caller safely retry a request that timed out or failed before it saw the response. The key is scoped per merchant, so two merchants may reuse the same key value independently. Uniqueness is enforced at the database with a partial unique index on `(merchant_id, idempotency_key)`; a race between two concurrent requests carrying the same key is resolved there, and the loser looks up and returns the winner's payment rather than erroring.
+
+## Refunds
+
+`POST /payments/{id}/refund` transitions an `approved` payment to `refunded`, setting `refunded_at`. It's the other half of the gateway's API surface — the compensating action a caller (e.g. a checkout saga) would invoke to undo a charge. A payment can only be refunded once, and only from `approved`:
+
+- Refunding a payment that's already `refunded` returns `409` (not idempotent by design — unlike payment creation, a repeat refund attempt is treated as a caller bug worth surfacing, not a safe retry).
+- Refunding a `declined` payment returns `409` — there's nothing to undo.
+- An unknown id returns `404`.
+
+The state transition is a single conditional `UPDATE ... WHERE status = 'approved'`, so it's race-safe against concurrent refund attempts for the same payment. Like payment creation, refunding accepts an optional `webhook_url` in the request body and, if set, asynchronously delivers a `payment.refunded` event the same way `POST /payments` delivers `payment.approved`/`payment.declined` (see Webhooks above) — including the same latency and duplicate-delivery chaos.
 
 ## Migrations
 
