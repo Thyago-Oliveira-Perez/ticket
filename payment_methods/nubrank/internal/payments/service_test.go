@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"nubrank/internal/customers"
+	"nubrank/internal/paymentmethods"
+
 	"github.com/google/uuid"
 )
 
@@ -108,6 +111,19 @@ func (f *fakeWebhookSender) Send(ctx context.Context, url, eventType string, dat
 
 const defaultMerchantID = "11111111-1111-1111-1111-111111111111"
 
+// alwaysOKVerifier satisfies both CustomerVerifier and PaymentMethodVerifier,
+// used by tests that don't exercise ownership-validation failures.
+type alwaysOKVerifier struct{}
+
+func (alwaysOKVerifier) VerifyOwnership(ctx context.Context, a, b string) error { return nil }
+
+// notFoundVerifier always fails ownership, returning whatever error it's
+// constructed with (customers.ErrCustomerNotFound or
+// paymentmethods.ErrPaymentMethodNotFound in practice).
+type notFoundVerifier struct{ err error }
+
+func (v notFoundVerifier) VerifyOwnership(ctx context.Context, a, b string) error { return v.err }
+
 func validInput() CreatePaymentInput {
 	return CreatePaymentInput{
 		MerchantID:      defaultMerchantID,
@@ -119,7 +135,7 @@ func validInput() CreatePaymentInput {
 }
 
 func TestCreatePayment_DeclineDisabled_AlwaysApproved(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{})
+	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	p, err := s.CreatePayment(context.Background(), validInput())
 	if err != nil {
@@ -134,7 +150,7 @@ func TestCreatePayment_DeclineDisabled_AlwaysApproved(t *testing.T) {
 }
 
 func TestCreatePayment_DeclineRateOne_AlwaysDeclined(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{Rate: 1})
+	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{Rate: 1}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	p, err := s.CreatePayment(context.Background(), validInput())
 	if err != nil {
@@ -150,7 +166,7 @@ func TestCreatePayment_DeclineRateOne_AlwaysDeclined(t *testing.T) {
 
 func TestCreatePayment_DeclinedPayment_SendsDeclinedWebhook(t *testing.T) {
 	webhooks := newFakeWebhookSender()
-	s := NewService(&fakeRepository{}, webhooks, DeclineConfig{Rate: 1})
+	s := NewService(&fakeRepository{}, webhooks, DeclineConfig{Rate: 1}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	in := validInput()
 	in.WebhookURL = "https://example.com/hook"
@@ -171,7 +187,7 @@ func TestCreatePayment_DeclinedPayment_SendsDeclinedWebhook(t *testing.T) {
 
 func TestCreatePayment_ApprovedPayment_SendsApprovedWebhook(t *testing.T) {
 	webhooks := newFakeWebhookSender()
-	s := NewService(&fakeRepository{}, webhooks, DeclineConfig{})
+	s := NewService(&fakeRepository{}, webhooks, DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	in := validInput()
 	in.WebhookURL = "https://example.com/hook"
@@ -192,7 +208,7 @@ func TestCreatePayment_ApprovedPayment_SendsApprovedWebhook(t *testing.T) {
 
 func TestCreatePayment_RepeatedIdempotencyKey_ReturnsOriginalPayment(t *testing.T) {
 	repo := &fakeRepository{}
-	s := NewService(repo, newFakeWebhookSender(), DeclineConfig{})
+	s := NewService(repo, newFakeWebhookSender(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	in := validInput()
 	in.IdempotencyKey = "retry-key-1"
@@ -217,7 +233,7 @@ func TestCreatePayment_RepeatedIdempotencyKey_ReturnsOriginalPayment(t *testing.
 
 func TestCreatePayment_RepeatedIdempotencyKey_DoesNotResendWebhook(t *testing.T) {
 	webhooks := newFakeWebhookSender()
-	s := NewService(&fakeRepository{}, webhooks, DeclineConfig{})
+	s := NewService(&fakeRepository{}, webhooks, DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	in := validInput()
 	in.IdempotencyKey = "retry-key-2"
@@ -241,7 +257,7 @@ func TestCreatePayment_RepeatedIdempotencyKey_DoesNotResendWebhook(t *testing.T)
 
 func TestCreatePayment_DifferentMerchantsSameIdempotencyKey_BothCreated(t *testing.T) {
 	repo := &fakeRepository{}
-	s := NewService(repo, newFakeWebhookSender(), DeclineConfig{})
+	s := NewService(repo, newFakeWebhookSender(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	in1 := validInput()
 	in1.IdempotencyKey = "shared-key"
@@ -263,7 +279,7 @@ func TestCreatePayment_DifferentMerchantsSameIdempotencyKey_BothCreated(t *testi
 }
 
 func TestCreatePayment_InvalidInput_ReturnsValidationError(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{})
+	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	in := validInput()
 	in.AmountMinor = 0
@@ -272,8 +288,26 @@ func TestCreatePayment_InvalidInput_ReturnsValidationError(t *testing.T) {
 	}
 }
 
+func TestCreatePayment_UnknownCustomer_ReturnsCustomerNotFound(t *testing.T) {
+	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{}, notFoundVerifier{customers.ErrCustomerNotFound}, alwaysOKVerifier{})
+
+	_, err := s.CreatePayment(context.Background(), validInput())
+	if !errors.Is(err, ErrCustomerNotFound) {
+		t.Fatalf("expected ErrCustomerNotFound, got %v", err)
+	}
+}
+
+func TestCreatePayment_UnknownPaymentMethod_ReturnsPaymentMethodNotFound(t *testing.T) {
+	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{}, alwaysOKVerifier{}, notFoundVerifier{paymentmethods.ErrPaymentMethodNotFound})
+
+	_, err := s.CreatePayment(context.Background(), validInput())
+	if !errors.Is(err, ErrPaymentMethodNotFound) {
+		t.Fatalf("expected ErrPaymentMethodNotFound, got %v", err)
+	}
+}
+
 func TestGetPayment_ExistingID_ReturnsPayment(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{})
+	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	created, err := s.CreatePayment(context.Background(), validInput())
 	if err != nil {
@@ -290,7 +324,7 @@ func TestGetPayment_ExistingID_ReturnsPayment(t *testing.T) {
 }
 
 func TestGetPayment_UnknownID_ReturnsNotFound(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{})
+	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	_, err := s.GetPayment(context.Background(), defaultMerchantID, "11111111-1111-1111-1111-111111111111")
 	if !errors.Is(err, ErrPaymentNotFound) {
@@ -299,7 +333,7 @@ func TestGetPayment_UnknownID_ReturnsNotFound(t *testing.T) {
 }
 
 func TestGetPayment_InvalidID_ReturnsValidationError(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{})
+	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	_, err := s.GetPayment(context.Background(), defaultMerchantID, "not-a-uuid")
 	if !errors.Is(err, ErrValidation) {
@@ -308,7 +342,7 @@ func TestGetPayment_InvalidID_ReturnsValidationError(t *testing.T) {
 }
 
 func TestRefundPayment_ApprovedPayment_Refunds(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{})
+	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	created, err := s.CreatePayment(context.Background(), validInput())
 	if err != nil {
@@ -328,7 +362,7 @@ func TestRefundPayment_ApprovedPayment_Refunds(t *testing.T) {
 }
 
 func TestRefundPayment_AlreadyRefunded_ReturnsAlreadyRefundedError(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{})
+	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	created, err := s.CreatePayment(context.Background(), validInput())
 	if err != nil {
@@ -345,7 +379,7 @@ func TestRefundPayment_AlreadyRefunded_ReturnsAlreadyRefundedError(t *testing.T)
 }
 
 func TestRefundPayment_DeclinedPayment_ReturnsNotApprovedError(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{Rate: 1})
+	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{Rate: 1}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	created, err := s.CreatePayment(context.Background(), validInput())
 	if err != nil {
@@ -362,7 +396,7 @@ func TestRefundPayment_DeclinedPayment_ReturnsNotApprovedError(t *testing.T) {
 }
 
 func TestRefundPayment_UnknownID_ReturnsNotFound(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{})
+	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	_, err := s.RefundPayment(context.Background(), defaultMerchantID, "11111111-1111-1111-1111-111111111111", RefundInput{})
 	if !errors.Is(err, ErrPaymentNotFound) {
@@ -371,7 +405,7 @@ func TestRefundPayment_UnknownID_ReturnsNotFound(t *testing.T) {
 }
 
 func TestRefundPayment_InvalidID_ReturnsValidationError(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{})
+	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	_, err := s.RefundPayment(context.Background(), defaultMerchantID, "not-a-uuid", RefundInput{})
 	if !errors.Is(err, ErrValidation) {
@@ -381,7 +415,7 @@ func TestRefundPayment_InvalidID_ReturnsValidationError(t *testing.T) {
 
 func TestRefundPayment_SendsRefundedWebhook(t *testing.T) {
 	webhooks := newFakeWebhookSender()
-	s := NewService(&fakeRepository{}, webhooks, DeclineConfig{})
+	s := NewService(&fakeRepository{}, webhooks, DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	created, err := s.CreatePayment(context.Background(), validInput())
 	if err != nil {

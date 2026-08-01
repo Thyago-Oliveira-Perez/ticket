@@ -90,6 +90,10 @@ func (h *handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if errors.Is(err, ErrCustomerNotFound) || errors.Is(err, ErrPaymentMethodNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
 		log.Println(err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

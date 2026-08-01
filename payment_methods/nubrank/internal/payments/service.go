@@ -8,6 +8,9 @@ import (
 	"math/rand/v2"
 	"net/url"
 
+	"nubrank/internal/customers"
+	"nubrank/internal/paymentmethods"
+
 	"github.com/google/uuid"
 )
 
@@ -23,6 +26,26 @@ var ErrPaymentAlreadyRefunded = errors.New("payment already refunded")
 // ErrPaymentNotApproved is returned by RefundPayment when the payment isn't
 // in StatusApproved (e.g. it was declined) and so can't be refunded.
 var ErrPaymentNotApproved = errors.New("payment is not approved and cannot be refunded")
+
+// ErrCustomerNotFound is returned by CreatePayment when customer_id doesn't
+// exist (or doesn't belong to the authenticated merchant).
+var ErrCustomerNotFound = errors.New("customer not found")
+
+// ErrPaymentMethodNotFound is returned by CreatePayment when
+// payment_method_id doesn't exist (or doesn't belong to customer_id).
+var ErrPaymentMethodNotFound = errors.New("payment method not found")
+
+// CustomerVerifier is the subset of customers.Service CreatePayment needs:
+// confirming customer_id belongs to the authenticated merchant.
+type CustomerVerifier interface {
+	VerifyOwnership(ctx context.Context, merchantID, customerID string) error
+}
+
+// PaymentMethodVerifier is the subset of paymentmethods.Service
+// CreatePayment needs: confirming payment_method_id belongs to customer_id.
+type PaymentMethodVerifier interface {
+	VerifyOwnership(ctx context.Context, customerID, paymentMethodID string) error
+}
 
 // WebhookSender delivers a domain event to a caller-supplied URL. Defined
 // here (rather than depending on the webhook package's concrete type) so
@@ -91,20 +114,24 @@ var declineReasons = []string{
 }
 
 type svc struct {
-	repo     Repository
-	webhooks WebhookSender
-	decline  DeclineConfig
+	repo           Repository
+	webhooks       WebhookSender
+	decline        DeclineConfig
+	customers      CustomerVerifier
+	paymentMethods PaymentMethodVerifier
 	// rollDecline and pickReason are overridden in tests for determinism;
 	// they default to real randomness via NewService.
 	rollDecline func() bool
 	pickReason  func() string
 }
 
-func NewService(repo Repository, webhooks WebhookSender, decline DeclineConfig) Service {
+func NewService(repo Repository, webhooks WebhookSender, decline DeclineConfig, customerVerifier CustomerVerifier, paymentMethodVerifier PaymentMethodVerifier) Service {
 	return &svc{
-		repo:     repo,
-		webhooks: webhooks,
-		decline:  decline,
+		repo:           repo,
+		webhooks:       webhooks,
+		decline:        decline,
+		customers:      customerVerifier,
+		paymentMethods: paymentMethodVerifier,
 		rollDecline: func() bool {
 			return decline.Rate > 0 && rand.Float64() < decline.Rate
 		},
@@ -166,6 +193,18 @@ func (s *svc) RefundPayment(ctx context.Context, merchantID, id string, in Refun
 
 func (s *svc) CreatePayment(ctx context.Context, in CreatePaymentInput) (Payment, error) {
 	if err := validateCreatePaymentInput(in); err != nil {
+		return Payment{}, err
+	}
+	if err := s.customers.VerifyOwnership(ctx, in.MerchantID, in.CustomerID); err != nil {
+		if errors.Is(err, customers.ErrCustomerNotFound) {
+			return Payment{}, ErrCustomerNotFound
+		}
+		return Payment{}, err
+	}
+	if err := s.paymentMethods.VerifyOwnership(ctx, in.CustomerID, in.PaymentMethodID); err != nil {
+		if errors.Is(err, paymentmethods.ErrPaymentMethodNotFound) {
+			return Payment{}, ErrPaymentMethodNotFound
+		}
 		return Payment{}, err
 	}
 
