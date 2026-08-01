@@ -18,6 +18,12 @@ type Service interface {
 	// Balance returns merchantID's current ledger account balance
 	// (creating the account with a zero balance if it doesn't exist yet).
 	Balance(ctx context.Context, merchantID string) (int64, error)
+	// LockMerchantBalance locks (FOR UPDATE) merchantID's ledger account
+	// and returns its current balance, for a caller that needs to check
+	// sufficiency before posting a debit (e.g. a payout) without racing a
+	// concurrent posting. q must be bound to the same transaction as the
+	// Post call that follows.
+	LockMerchantBalance(ctx context.Context, q database.Querier, merchantID string) (int64, error)
 }
 
 type svc struct {
@@ -77,4 +83,20 @@ func (s *svc) Balance(ctx context.Context, merchantID string) (int64, error) {
 		return 0, err
 	}
 	return acc.BalanceMinor, nil
+}
+
+func (s *svc) LockMerchantBalance(ctx context.Context, q database.Querier, merchantID string) (int64, error) {
+	repo := s.repo.WithQuerier(q)
+
+	acc, err := repo.GetOrCreateMerchantAccount(ctx, merchantID)
+	if err != nil {
+		return 0, fmt.Errorf("get or create merchant ledger account: %w", err)
+	}
+
+	locked, err := repo.LockAccount(ctx, acc.ID)
+	if err != nil {
+		return 0, fmt.Errorf("lock merchant ledger account: %w", err)
+	}
+
+	return locked.BalanceMinor, nil
 }
