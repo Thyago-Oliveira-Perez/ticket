@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"nubrank/internal/database"
 )
 
 const (
@@ -50,4 +52,8 @@ type Repository interface {
 	// StatusRefunded, scoped to merchantID. Returns ErrRefundNotApplied if
 	// the payment isn't currently approved (or belongs to another merchant).
 	RefundPayment(ctx context.Context, merchantID, id string) (Payment, error)
+	// WithQuerier returns a Repository bound to q instead of the pool, so
+	// its calls can participate in a transaction started elsewhere (e.g.
+	// atomically with an outbox event insert).
+	WithQuerier(q database.Querier) Repository
 }

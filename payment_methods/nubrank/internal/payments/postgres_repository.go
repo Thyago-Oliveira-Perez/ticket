@@ -5,16 +5,21 @@ import (
 	"errors"
 	"fmt"
 
+	"nubrank/internal/database"
+
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type postgresRepository struct {
-	db *pgxpool.Pool
+	db database.Querier
 }
 
-func NewPostgresRepository(db *pgxpool.Pool) Repository {
+func NewPostgresRepository(db database.Querier) Repository {
 	return &postgresRepository{db: db}
+}
+
+func (r *postgresRepository) WithQuerier(q database.Querier) Repository {
+	return &postgresRepository{db: q}
 }
 
 func (r *postgresRepository) ListPayments(ctx context.Context, merchantID string) ([]Payment, error) {

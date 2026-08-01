@@ -9,6 +9,9 @@ package webhook
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -53,12 +56,14 @@ func NewSender(cfg Config) *Sender {
 	return &Sender{cfg: cfg, client: &http.Client{Timeout: 10 * time.Second}}
 }
 
-// Send delivers an eventType/data event to url as a JSON webhook. It blocks
-// for the simulated latency and any duplicate delivery, so callers wanting
+// Send delivers an eventType/data event to url as a JSON webhook, signed
+// with secret (Stripe-style: a "t=<unix>,v1=<hmac>" header over
+// "<unix>.<body>"), or unsigned if secret is empty. It blocks for the
+// simulated latency and any duplicate delivery, so callers wanting
 // fire-and-forget semantics should invoke it in a goroutine. Delivery
 // failures (network errors, non-2xx responses) are logged, not returned —
 // nubrank doesn't retry on failure beyond the configured duplicate rate.
-func (s *Sender) Send(ctx context.Context, url, eventType string, data any) error {
+func (s *Sender) Send(ctx context.Context, url, secret, eventType string, data any) error {
 	id := uuid.NewString()
 
 	body, err := json.Marshal(envelope{
@@ -72,16 +77,16 @@ func (s *Sender) Send(ctx context.Context, url, eventType string, data any) erro
 		return fmt.Errorf("marshal webhook event: %w", err)
 	}
 
-	s.deliver(ctx, url, id, body)
+	s.deliver(ctx, url, secret, id, body)
 
 	if s.cfg.DuplicateRate > 0 && rand.Float64() < s.cfg.DuplicateRate {
-		s.deliver(ctx, url, id, body)
+		s.deliver(ctx, url, secret, id, body)
 	}
 
 	return nil
 }
 
-func (s *Sender) deliver(ctx context.Context, url, eventID string, body []byte) {
+func (s *Sender) deliver(ctx context.Context, url, secret, eventID string, body []byte) {
 	s.sleepLatency()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -91,6 +96,9 @@ func (s *Sender) deliver(ctx context.Context, url, eventID string, body []byte) 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Webhook-Event-Id", eventID)
+	if secret != "" {
+		req.Header.Set("X-Webhook-Signature", sign(secret, body))
+	}
 
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -102,6 +110,17 @@ func (s *Sender) deliver(ctx context.Context, url, eventID string, body []byte) 
 	if resp.StatusCode >= 300 {
 		log.Printf("webhook: event %s to %s got status %d", eventID, url, resp.StatusCode)
 	}
+}
+
+// sign produces a Stripe-style signature header: a timestamp plus an
+// HMAC-SHA256 of "<timestamp>.<body>" keyed by secret, so a receiver can
+// verify both authenticity and (via the timestamp) freshness.
+func sign(secret string, body []byte) string {
+	ts := time.Now().Unix()
+	mac := hmac.New(sha256.New, []byte(secret))
+	fmt.Fprintf(mac, "%d.", ts)
+	mac.Write(body)
+	return fmt.Sprintf("t=%d,v1=%s", ts, hex.EncodeToString(mac.Sum(nil)))
 }
 
 func (s *Sender) sleepLatency() {

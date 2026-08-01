@@ -6,11 +6,14 @@ import (
 	"nubrank/internal/auth"
 	"nubrank/internal/chaos"
 	"nubrank/internal/customers"
+	"nubrank/internal/database"
+	"nubrank/internal/events"
 	"nubrank/internal/idempotency"
 	"nubrank/internal/merchants"
 	"nubrank/internal/paymentmethods"
 	"nubrank/internal/payments"
 	"nubrank/internal/webhook"
+	"nubrank/internal/webhookendpoints"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -59,9 +62,17 @@ func (app *application) mount() http.Handler {
 	paymentMethodService := paymentmethods.NewService(paymentMethodRepo, customerService)
 	paymentMethodHandler := paymentmethods.NewHandler(paymentMethodService)
 
-	paymentRepo := payments.NewPostgresRepository(app.db)
+	webhookEndpointRepo := webhookendpoints.NewPostgresRepository(app.db)
+	webhookEndpointService := webhookendpoints.NewService(webhookEndpointRepo)
+	webhookEndpointHandler := webhookendpoints.NewHandler(webhookEndpointService)
+
 	webhookSender := webhook.NewSender(app.config.webhook)
-	paymentService := payments.NewService(paymentRepo, webhookSender, app.config.paymentDecline, customerService, paymentMethodService)
+	eventRepo := events.NewPostgresRepository(app.db)
+	eventPublisher := events.NewService(eventRepo, webhookEndpointService, webhookSender)
+
+	txRunner := database.NewTxRunner(app.db)
+	paymentRepo := payments.NewPostgresRepository(app.db)
+	paymentService := payments.NewService(paymentRepo, txRunner, eventPublisher, app.config.paymentDecline, customerService, paymentMethodService)
 	paymentHandler := payments.NewHandler(paymentService)
 
 	idempotencyRepo := idempotency.NewPostgresRepository(app.db)
@@ -74,6 +85,8 @@ func (app *application) mount() http.Handler {
 		r.With(idempotent).Post("/customers", customerHandler.CreateCustomer)
 		r.Get("/customers/{id}", customerHandler.GetCustomer)
 		r.With(idempotent).Post("/customers/{customerId}/payment-methods", paymentMethodHandler.CreatePaymentMethod)
+
+		r.Post("/webhook-endpoints", webhookEndpointHandler.CreateEndpoint)
 
 		r.Get("/payments", paymentHandler.ListPayments)
 		r.With(idempotent).Post("/payments", paymentHandler.CreatePayment)

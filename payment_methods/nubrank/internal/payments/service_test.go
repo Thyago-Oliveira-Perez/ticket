@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"nubrank/internal/customers"
+	"nubrank/internal/database"
+	"nubrank/internal/events"
 	"nubrank/internal/paymentmethods"
 
 	"github.com/google/uuid"
@@ -17,6 +19,10 @@ type fakeRepository struct {
 	mu       sync.Mutex
 	payments []Payment
 }
+
+// WithQuerier is a no-op for the fake: it isn't backed by a real database,
+// so there's no transaction to bind to.
+func (f *fakeRepository) WithQuerier(q database.Querier) Repository { return f }
 
 func (f *fakeRepository) ListPayments(ctx context.Context, merchantID string) ([]Payment, error) {
 	f.mu.Lock()
@@ -67,28 +73,48 @@ func (f *fakeRepository) RefundPayment(ctx context.Context, merchantID, id strin
 	return Payment{}, ErrRefundNotApplied
 }
 
-type capturedWebhook struct {
-	url       string
-	eventType string
-	data      any
+// fakeTxRunner runs fn directly with a nil Querier: none of the fakes in
+// this file are backed by a real database, so there's no transaction to
+// actually start.
+type fakeTxRunner struct{}
+
+func (fakeTxRunner) RunInTx(ctx context.Context, fn func(q database.Querier) error) error {
+	return fn(nil)
 }
 
-type fakeWebhookSender struct {
-	mu   sync.Mutex
-	sent []capturedWebhook
-	done chan struct{}
+type publishedEvent struct {
+	merchantID string
+	eventType  string
+	resourceID string
+	payload    any
 }
 
-func newFakeWebhookSender() *fakeWebhookSender {
-	return &fakeWebhookSender{done: make(chan struct{}, 1)}
+type fakeEventPublisher struct {
+	mu        sync.Mutex
+	published []publishedEvent
 }
 
-func (f *fakeWebhookSender) Send(ctx context.Context, url, eventType string, data any) error {
+func newFakeEventPublisher() *fakeEventPublisher {
+	return &fakeEventPublisher{}
+}
+
+func (f *fakeEventPublisher) Publish(ctx context.Context, q database.Querier, merchantID, eventType, resourceID string, payload any) ([]events.Delivery, error) {
 	f.mu.Lock()
-	f.sent = append(f.sent, capturedWebhook{url: url, eventType: eventType, data: data})
-	f.mu.Unlock()
-	f.done <- struct{}{}
-	return nil
+	defer f.mu.Unlock()
+	f.published = append(f.published, publishedEvent{merchantID, eventType, resourceID, payload})
+	return nil, nil
+}
+
+func (f *fakeEventPublisher) Dispatch(ctx context.Context, deliveries []events.Delivery) {}
+
+func (f *fakeEventPublisher) eventTypes() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var types []string
+	for _, e := range f.published {
+		types = append(types, e.eventType)
+	}
+	return types
 }
 
 const defaultMerchantID = "11111111-1111-1111-1111-111111111111"
@@ -116,8 +142,12 @@ func validInput() CreatePaymentInput {
 	}
 }
 
+func newTestService(repo Repository, pub events.Publisher, decline DeclineConfig, customerVerifier CustomerVerifier, paymentMethodVerifier PaymentMethodVerifier) Service {
+	return NewService(repo, fakeTxRunner{}, pub, decline, customerVerifier, paymentMethodVerifier)
+}
+
 func TestCreatePayment_DeclineDisabled_AlwaysApproved(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
+	s := newTestService(&fakeRepository{}, newFakeEventPublisher(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	p, err := s.CreatePayment(context.Background(), validInput())
 	if err != nil {
@@ -132,7 +162,7 @@ func TestCreatePayment_DeclineDisabled_AlwaysApproved(t *testing.T) {
 }
 
 func TestCreatePayment_DeclineRateOne_AlwaysDeclined(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{Rate: 1}, alwaysOKVerifier{}, alwaysOKVerifier{})
+	s := newTestService(&fakeRepository{}, newFakeEventPublisher(), DeclineConfig{Rate: 1}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	p, err := s.CreatePayment(context.Background(), validInput())
 	if err != nil {
@@ -146,50 +176,36 @@ func TestCreatePayment_DeclineRateOne_AlwaysDeclined(t *testing.T) {
 	}
 }
 
-func TestCreatePayment_DeclinedPayment_SendsDeclinedWebhook(t *testing.T) {
-	webhooks := newFakeWebhookSender()
-	s := NewService(&fakeRepository{}, webhooks, DeclineConfig{Rate: 1}, alwaysOKVerifier{}, alwaysOKVerifier{})
+func TestCreatePayment_DeclinedPayment_PublishesDeclinedEvent(t *testing.T) {
+	pub := newFakeEventPublisher()
+	s := newTestService(&fakeRepository{}, pub, DeclineConfig{Rate: 1}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
-	in := validInput()
-	in.WebhookURL = "https://example.com/hook"
-	if _, err := s.CreatePayment(context.Background(), in); err != nil {
+	if _, err := s.CreatePayment(context.Background(), validInput()); err != nil {
 		t.Fatalf("CreatePayment returned error: %v", err)
 	}
 
-	<-webhooks.done
-	webhooks.mu.Lock()
-	defer webhooks.mu.Unlock()
-	if len(webhooks.sent) != 1 {
-		t.Fatalf("expected exactly 1 webhook delivery, got %d", len(webhooks.sent))
-	}
-	if webhooks.sent[0].eventType != "payment.declined" {
-		t.Fatalf("expected event type payment.declined, got %s", webhooks.sent[0].eventType)
+	types := pub.eventTypes()
+	if len(types) != 1 || types[0] != "payment.declined" {
+		t.Fatalf("expected exactly one payment.declined event, got %v", types)
 	}
 }
 
-func TestCreatePayment_ApprovedPayment_SendsApprovedWebhook(t *testing.T) {
-	webhooks := newFakeWebhookSender()
-	s := NewService(&fakeRepository{}, webhooks, DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
+func TestCreatePayment_ApprovedPayment_PublishesApprovedEvent(t *testing.T) {
+	pub := newFakeEventPublisher()
+	s := newTestService(&fakeRepository{}, pub, DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
-	in := validInput()
-	in.WebhookURL = "https://example.com/hook"
-	if _, err := s.CreatePayment(context.Background(), in); err != nil {
+	if _, err := s.CreatePayment(context.Background(), validInput()); err != nil {
 		t.Fatalf("CreatePayment returned error: %v", err)
 	}
 
-	<-webhooks.done
-	webhooks.mu.Lock()
-	defer webhooks.mu.Unlock()
-	if len(webhooks.sent) != 1 {
-		t.Fatalf("expected exactly 1 webhook delivery, got %d", len(webhooks.sent))
-	}
-	if webhooks.sent[0].eventType != "payment.approved" {
-		t.Fatalf("expected event type payment.approved, got %s", webhooks.sent[0].eventType)
+	types := pub.eventTypes()
+	if len(types) != 1 || types[0] != "payment.approved" {
+		t.Fatalf("expected exactly one payment.approved event, got %v", types)
 	}
 }
 
 func TestCreatePayment_InvalidInput_ReturnsValidationError(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
+	s := newTestService(&fakeRepository{}, newFakeEventPublisher(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	in := validInput()
 	in.AmountMinor = 0
@@ -199,7 +215,7 @@ func TestCreatePayment_InvalidInput_ReturnsValidationError(t *testing.T) {
 }
 
 func TestCreatePayment_UnknownCustomer_ReturnsCustomerNotFound(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{}, notFoundVerifier{customers.ErrCustomerNotFound}, alwaysOKVerifier{})
+	s := newTestService(&fakeRepository{}, newFakeEventPublisher(), DeclineConfig{}, notFoundVerifier{customers.ErrCustomerNotFound}, alwaysOKVerifier{})
 
 	_, err := s.CreatePayment(context.Background(), validInput())
 	if !errors.Is(err, ErrCustomerNotFound) {
@@ -208,7 +224,7 @@ func TestCreatePayment_UnknownCustomer_ReturnsCustomerNotFound(t *testing.T) {
 }
 
 func TestCreatePayment_UnknownPaymentMethod_ReturnsPaymentMethodNotFound(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{}, alwaysOKVerifier{}, notFoundVerifier{paymentmethods.ErrPaymentMethodNotFound})
+	s := newTestService(&fakeRepository{}, newFakeEventPublisher(), DeclineConfig{}, alwaysOKVerifier{}, notFoundVerifier{paymentmethods.ErrPaymentMethodNotFound})
 
 	_, err := s.CreatePayment(context.Background(), validInput())
 	if !errors.Is(err, ErrPaymentMethodNotFound) {
@@ -217,7 +233,7 @@ func TestCreatePayment_UnknownPaymentMethod_ReturnsPaymentMethodNotFound(t *test
 }
 
 func TestGetPayment_ExistingID_ReturnsPayment(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
+	s := newTestService(&fakeRepository{}, newFakeEventPublisher(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	created, err := s.CreatePayment(context.Background(), validInput())
 	if err != nil {
@@ -234,7 +250,7 @@ func TestGetPayment_ExistingID_ReturnsPayment(t *testing.T) {
 }
 
 func TestGetPayment_UnknownID_ReturnsNotFound(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
+	s := newTestService(&fakeRepository{}, newFakeEventPublisher(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	_, err := s.GetPayment(context.Background(), defaultMerchantID, "11111111-1111-1111-1111-111111111111")
 	if !errors.Is(err, ErrPaymentNotFound) {
@@ -243,7 +259,7 @@ func TestGetPayment_UnknownID_ReturnsNotFound(t *testing.T) {
 }
 
 func TestGetPayment_InvalidID_ReturnsValidationError(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
+	s := newTestService(&fakeRepository{}, newFakeEventPublisher(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	_, err := s.GetPayment(context.Background(), defaultMerchantID, "not-a-uuid")
 	if !errors.Is(err, ErrValidation) {
@@ -252,7 +268,7 @@ func TestGetPayment_InvalidID_ReturnsValidationError(t *testing.T) {
 }
 
 func TestRefundPayment_ApprovedPayment_Refunds(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
+	s := newTestService(&fakeRepository{}, newFakeEventPublisher(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	created, err := s.CreatePayment(context.Background(), validInput())
 	if err != nil {
@@ -272,7 +288,7 @@ func TestRefundPayment_ApprovedPayment_Refunds(t *testing.T) {
 }
 
 func TestRefundPayment_AlreadyRefunded_ReturnsAlreadyRefundedError(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
+	s := newTestService(&fakeRepository{}, newFakeEventPublisher(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	created, err := s.CreatePayment(context.Background(), validInput())
 	if err != nil {
@@ -289,7 +305,7 @@ func TestRefundPayment_AlreadyRefunded_ReturnsAlreadyRefundedError(t *testing.T)
 }
 
 func TestRefundPayment_DeclinedPayment_ReturnsNotApprovedError(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{Rate: 1}, alwaysOKVerifier{}, alwaysOKVerifier{})
+	s := newTestService(&fakeRepository{}, newFakeEventPublisher(), DeclineConfig{Rate: 1}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	created, err := s.CreatePayment(context.Background(), validInput())
 	if err != nil {
@@ -306,7 +322,7 @@ func TestRefundPayment_DeclinedPayment_ReturnsNotApprovedError(t *testing.T) {
 }
 
 func TestRefundPayment_UnknownID_ReturnsNotFound(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
+	s := newTestService(&fakeRepository{}, newFakeEventPublisher(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	_, err := s.RefundPayment(context.Background(), defaultMerchantID, "11111111-1111-1111-1111-111111111111", RefundInput{})
 	if !errors.Is(err, ErrPaymentNotFound) {
@@ -315,7 +331,7 @@ func TestRefundPayment_UnknownID_ReturnsNotFound(t *testing.T) {
 }
 
 func TestRefundPayment_InvalidID_ReturnsValidationError(t *testing.T) {
-	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
+	s := newTestService(&fakeRepository{}, newFakeEventPublisher(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	_, err := s.RefundPayment(context.Background(), defaultMerchantID, "not-a-uuid", RefundInput{})
 	if !errors.Is(err, ErrValidation) {
@@ -323,26 +339,21 @@ func TestRefundPayment_InvalidID_ReturnsValidationError(t *testing.T) {
 	}
 }
 
-func TestRefundPayment_SendsRefundedWebhook(t *testing.T) {
-	webhooks := newFakeWebhookSender()
-	s := NewService(&fakeRepository{}, webhooks, DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
+func TestRefundPayment_PublishesRefundedEvent(t *testing.T) {
+	pub := newFakeEventPublisher()
+	s := newTestService(&fakeRepository{}, pub, DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
 
 	created, err := s.CreatePayment(context.Background(), validInput())
 	if err != nil {
 		t.Fatalf("CreatePayment returned error: %v", err)
 	}
 
-	if _, err := s.RefundPayment(context.Background(), defaultMerchantID, created.ID, RefundInput{WebhookURL: "https://example.com/hook"}); err != nil {
+	if _, err := s.RefundPayment(context.Background(), defaultMerchantID, created.ID, RefundInput{}); err != nil {
 		t.Fatalf("RefundPayment returned error: %v", err)
 	}
 
-	<-webhooks.done
-	webhooks.mu.Lock()
-	defer webhooks.mu.Unlock()
-	if len(webhooks.sent) != 1 {
-		t.Fatalf("expected exactly 1 webhook delivery, got %d", len(webhooks.sent))
-	}
-	if webhooks.sent[0].eventType != "payment.refunded" {
-		t.Fatalf("expected event type payment.refunded, got %s", webhooks.sent[0].eventType)
+	types := pub.eventTypes()
+	if len(types) != 2 || types[1] != "payment.refunded" {
+		t.Fatalf("expected a payment.approved event followed by a payment.refunded event, got %v", types)
 	}
 }

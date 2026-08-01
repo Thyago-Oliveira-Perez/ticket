@@ -5,13 +5,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 )
 
 type receivedRequest struct {
-	eventID string
-	body    envelope
+	eventID   string
+	signature string
+	body      envelope
 }
 
 func newCapturingServer(t *testing.T, mu *sync.Mutex, received *[]receivedRequest) *httptest.Server {
@@ -22,7 +24,11 @@ func newCapturingServer(t *testing.T, mu *sync.Mutex, received *[]receivedReques
 			t.Errorf("decode webhook body: %v", err)
 		}
 		mu.Lock()
-		*received = append(*received, receivedRequest{eventID: r.Header.Get("X-Webhook-Event-Id"), body: env})
+		*received = append(*received, receivedRequest{
+			eventID:   r.Header.Get("X-Webhook-Event-Id"),
+			signature: r.Header.Get("X-Webhook-Signature"),
+			body:      env,
+		})
 		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -35,7 +41,7 @@ func TestSend_DeliversOnceByDefault(t *testing.T) {
 	defer srv.Close()
 
 	sender := NewSender(Config{})
-	if err := sender.Send(context.Background(), srv.URL, "payment.approved", map[string]string{"id": "p1"}); err != nil {
+	if err := sender.Send(context.Background(), srv.URL, "", "payment.approved", map[string]string{"id": "p1"}); err != nil {
 		t.Fatalf("Send returned error: %v", err)
 	}
 
@@ -50,6 +56,30 @@ func TestSend_DeliversOnceByDefault(t *testing.T) {
 	if received[0].eventID == "" || received[0].eventID != received[0].body.ID {
 		t.Fatalf("expected header event id to match body id, got header=%q body=%q", received[0].eventID, received[0].body.ID)
 	}
+	if received[0].signature != "" {
+		t.Fatalf("expected no signature header without a secret, got %q", received[0].signature)
+	}
+}
+
+func TestSend_WithSecret_SignsRequest(t *testing.T) {
+	var mu sync.Mutex
+	var received []receivedRequest
+	srv := newCapturingServer(t, &mu, &received)
+	defer srv.Close()
+
+	sender := NewSender(Config{})
+	if err := sender.Send(context.Background(), srv.URL, "whsec_test", "payment.approved", map[string]string{"id": "p1"}); err != nil {
+		t.Fatalf("Send returned error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != 1 {
+		t.Fatalf("expected exactly 1 delivery, got %d", len(received))
+	}
+	if !strings.HasPrefix(received[0].signature, "t=") || !strings.Contains(received[0].signature, ",v1=") {
+		t.Fatalf("expected a Stripe-style signature header, got %q", received[0].signature)
+	}
 }
 
 func TestSend_DuplicateRateOneSendsTwiceWithSameID(t *testing.T) {
@@ -59,7 +89,7 @@ func TestSend_DuplicateRateOneSendsTwiceWithSameID(t *testing.T) {
 	defer srv.Close()
 
 	sender := NewSender(Config{DuplicateRate: 1})
-	if err := sender.Send(context.Background(), srv.URL, "payment.approved", map[string]string{"id": "p1"}); err != nil {
+	if err := sender.Send(context.Background(), srv.URL, "", "payment.approved", map[string]string{"id": "p1"}); err != nil {
 		t.Fatalf("Send returned error: %v", err)
 	}
 
@@ -81,7 +111,7 @@ func TestSend_SequenceIncreasesAcrossCalls(t *testing.T) {
 
 	sender := NewSender(Config{})
 	for i := 0; i < 3; i++ {
-		if err := sender.Send(context.Background(), srv.URL, "payment.approved", nil); err != nil {
+		if err := sender.Send(context.Background(), srv.URL, "", "payment.approved", nil); err != nil {
 			t.Fatalf("Send returned error: %v", err)
 		}
 	}

@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"math/rand/v2"
-	"net/url"
 
 	"nubrank/internal/customers"
+	"nubrank/internal/database"
+	"nubrank/internal/events"
 	"nubrank/internal/paymentmethods"
 
 	"github.com/google/uuid"
@@ -47,30 +47,15 @@ type PaymentMethodVerifier interface {
 	VerifyOwnership(ctx context.Context, customerID, paymentMethodID string) error
 }
 
-// WebhookSender delivers a domain event to a caller-supplied URL. Defined
-// here (rather than depending on the webhook package's concrete type) so
-// this package doesn't need to import it — the webhook package's Sender
-// satisfies this structurally.
-type WebhookSender interface {
-	Send(ctx context.Context, url, eventType string, data any) error
-}
-
 type CreatePaymentInput struct {
 	MerchantID      string
 	CustomerID      string
 	PaymentMethodID string
 	AmountMinor     int64
 	Currency        string
-	// WebhookURL, if set, receives a payment.approved or payment.declined
-	// event once the payment is created. Optional.
-	WebhookURL string
 }
 
-type RefundInput struct {
-	// WebhookURL, if set, receives a payment.refunded event once the
-	// payment is refunded. Optional.
-	WebhookURL string
-}
+type RefundInput struct{}
 
 type Service interface {
 	// ListPayments lists payments belonging to merchantID.
@@ -110,7 +95,8 @@ var declineReasons = []string{
 
 type svc struct {
 	repo           Repository
-	webhooks       WebhookSender
+	tx             database.TxRunner
+	events         events.Publisher
 	decline        DeclineConfig
 	customers      CustomerVerifier
 	paymentMethods PaymentMethodVerifier
@@ -120,10 +106,11 @@ type svc struct {
 	pickReason  func() string
 }
 
-func NewService(repo Repository, webhooks WebhookSender, decline DeclineConfig, customerVerifier CustomerVerifier, paymentMethodVerifier PaymentMethodVerifier) Service {
+func NewService(repo Repository, tx database.TxRunner, eventPublisher events.Publisher, decline DeclineConfig, customerVerifier CustomerVerifier, paymentMethodVerifier PaymentMethodVerifier) Service {
 	return &svc{
 		repo:           repo,
-		webhooks:       webhooks,
+		tx:             tx,
+		events:         eventPublisher,
 		decline:        decline,
 		customers:      customerVerifier,
 		paymentMethods: paymentMethodVerifier,
@@ -151,37 +138,39 @@ func (s *svc) RefundPayment(ctx context.Context, merchantID, id string, in Refun
 	if _, err := uuid.Parse(id); err != nil {
 		return Payment{}, fmt.Errorf("%w: id must be a valid UUID", ErrValidation)
 	}
-	if err := validateWebhookURL(in.WebhookURL); err != nil {
+
+	var refunded Payment
+	var deliveries []events.Delivery
+	err := s.tx.RunInTx(ctx, func(q database.Querier) error {
+		var err error
+		refunded, err = s.repo.WithQuerier(q).RefundPayment(ctx, merchantID, id)
+		if err != nil {
+			if !errors.Is(err, ErrRefundNotApplied) {
+				return err
+			}
+			// The conditional update matched no row; re-fetch to tell a
+			// missing payment apart from one that just isn't refundable
+			// right now.
+			existing, getErr := s.repo.WithQuerier(q).GetByID(ctx, merchantID, id)
+			if getErr != nil {
+				return getErr
+			}
+			if existing.Status == StatusRefunded {
+				return ErrPaymentAlreadyRefunded
+			}
+			return ErrPaymentNotApproved
+		}
+
+		deliveries, err = s.events.Publish(ctx, q, merchantID, "payment.refunded", refunded.ID, refunded)
+		return err
+	})
+	if err != nil {
 		return Payment{}, err
 	}
 
-	refunded, err := s.repo.RefundPayment(ctx, merchantID, id)
-	if err != nil {
-		if !errors.Is(err, ErrRefundNotApplied) {
-			return Payment{}, err
-		}
-		// The conditional update matched no row; re-fetch to tell a missing
-		// payment apart from one that just isn't refundable right now.
-		existing, getErr := s.repo.GetByID(ctx, merchantID, id)
-		if getErr != nil {
-			return Payment{}, getErr
-		}
-		if existing.Status == StatusRefunded {
-			return Payment{}, ErrPaymentAlreadyRefunded
-		}
-		return Payment{}, ErrPaymentNotApproved
-	}
-
-	if in.WebhookURL != "" {
-		// Detach from the request context's cancellation (the HTTP response
-		// has already been decided) but keep any request-scoped values.
-		webhookCtx := context.WithoutCancel(ctx)
-		go func() {
-			if err := s.webhooks.Send(webhookCtx, in.WebhookURL, "payment.refunded", refunded); err != nil {
-				log.Printf("webhook: send failed for payment %s: %v", refunded.ID, err)
-			}
-		}()
-	}
+	// Detach from the request context's cancellation (the HTTP response has
+	// already been decided) but keep any request-scoped values.
+	s.events.Dispatch(context.WithoutCancel(ctx), deliveries)
 
 	return refunded, nil
 }
@@ -217,25 +206,29 @@ func (s *svc) CreatePayment(ctx context.Context, in CreatePaymentInput) (Payment
 		p.DeclineReason = &reason
 	}
 
-	created, err := s.repo.CreatePayment(ctx, p)
-	if err != nil {
-		return Payment{}, err
-	}
+	var created Payment
+	var deliveries []events.Delivery
+	err := s.tx.RunInTx(ctx, func(q database.Querier) error {
+		var err error
+		created, err = s.repo.WithQuerier(q).CreatePayment(ctx, p)
+		if err != nil {
+			return err
+		}
 
-	if in.WebhookURL != "" {
 		eventType := "payment.approved"
 		if created.Status == StatusDeclined {
 			eventType = "payment.declined"
 		}
-		// Detach from the request context's cancellation (the HTTP response
-		// has already been decided) but keep any request-scoped values.
-		webhookCtx := context.WithoutCancel(ctx)
-		go func() {
-			if err := s.webhooks.Send(webhookCtx, in.WebhookURL, eventType, created); err != nil {
-				log.Printf("webhook: send failed for payment %s: %v", created.ID, err)
-			}
-		}()
+		deliveries, err = s.events.Publish(ctx, q, in.MerchantID, eventType, created.ID, created)
+		return err
+	})
+	if err != nil {
+		return Payment{}, err
 	}
+
+	// Detach from the request context's cancellation (the HTTP response has
+	// already been decided) but keep any request-scoped values.
+	s.events.Dispatch(context.WithoutCancel(ctx), deliveries)
 
 	return created, nil
 }
@@ -257,16 +250,5 @@ func validateCreatePaymentInput(in CreatePaymentInput) error {
 		return fmt.Errorf("%w: currency must be a 3-letter ISO 4217 code", ErrValidation)
 	}
 
-	return validateWebhookURL(in.WebhookURL)
-}
-
-func validateWebhookURL(webhookURL string) error {
-	if webhookURL == "" {
-		return nil
-	}
-	u, err := url.ParseRequestURI(webhookURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
-		return fmt.Errorf("%w: webhook_url must be a valid http(s) URL", ErrValidation)
-	}
 	return nil
 }
