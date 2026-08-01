@@ -6,6 +6,7 @@ import (
 	"nubrank/internal/auth"
 	"nubrank/internal/chaos"
 	"nubrank/internal/customers"
+	"nubrank/internal/idempotency"
 	"nubrank/internal/merchants"
 	"nubrank/internal/paymentmethods"
 	"nubrank/internal/payments"
@@ -63,16 +64,19 @@ func (app *application) mount() http.Handler {
 	paymentService := payments.NewService(paymentRepo, webhookSender, app.config.paymentDecline, customerService, paymentMethodService)
 	paymentHandler := payments.NewHandler(paymentService)
 
+	idempotencyRepo := idempotency.NewPostgresRepository(app.db)
+	idempotent := idempotency.Middleware(idempotencyRepo)
+
 	// Every route below requires a valid merchant API key.
 	r.Group(func(r chi.Router) {
 		r.Use(auth.Middleware(merchantService))
 
-		r.Post("/customers", customerHandler.CreateCustomer)
+		r.With(idempotent).Post("/customers", customerHandler.CreateCustomer)
 		r.Get("/customers/{id}", customerHandler.GetCustomer)
-		r.Post("/customers/{customerId}/payment-methods", paymentMethodHandler.CreatePaymentMethod)
+		r.With(idempotent).Post("/customers/{customerId}/payment-methods", paymentMethodHandler.CreatePaymentMethod)
 
 		r.Get("/payments", paymentHandler.ListPayments)
-		r.Post("/payments", paymentHandler.CreatePayment)
+		r.With(idempotent).Post("/payments", paymentHandler.CreatePayment)
 		r.Get("/payments/{id}", paymentHandler.GetPayment)
 		r.Post("/payments/{id}/refund", paymentHandler.RefundPayment)
 	})

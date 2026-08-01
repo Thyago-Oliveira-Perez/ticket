@@ -83,7 +83,6 @@ func (h *handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 		AmountMinor:     req.AmountMinor,
 		Currency:        req.Currency,
 		WebhookURL:      req.WebhookURL,
-		IdempotencyKey:  r.Header.Get("Idempotency-Key"),
 	})
 	if err != nil {
 		if errors.Is(err, ErrValidation) {
