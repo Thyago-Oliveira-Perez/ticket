@@ -12,6 +12,7 @@ import (
 	"nubrank/internal/merchants"
 	"nubrank/internal/paymentmethods"
 	"nubrank/internal/payments"
+	"nubrank/internal/refunds"
 	"nubrank/internal/webhook"
 	"nubrank/internal/webhookendpoints"
 	"time"
@@ -75,6 +76,10 @@ func (app *application) mount() http.Handler {
 	paymentService := payments.NewService(paymentRepo, txRunner, eventPublisher, app.config.paymentDecline, customerService, paymentMethodService)
 	paymentHandler := payments.NewHandler(paymentService)
 
+	refundRepo := refunds.NewPostgresRepository(app.db)
+	refundService := refunds.NewService(refundRepo, paymentRepo, txRunner, eventPublisher)
+	refundHandler := refunds.NewHandler(refundService)
+
 	idempotencyRepo := idempotency.NewPostgresRepository(app.db)
 	idempotent := idempotency.Middleware(idempotencyRepo)
 
@@ -91,7 +96,8 @@ func (app *application) mount() http.Handler {
 		r.Get("/payments", paymentHandler.ListPayments)
 		r.With(idempotent).Post("/payments", paymentHandler.CreatePayment)
 		r.Get("/payments/{id}", paymentHandler.GetPayment)
-		r.Post("/payments/{id}/refund", paymentHandler.RefundPayment)
+		r.With(idempotent).Post("/payments/{id}/refunds", refundHandler.CreateRefund)
+		r.Get("/payments/{id}/refunds", refundHandler.ListRefunds)
 	})
 
 	return r

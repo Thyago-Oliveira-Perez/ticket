@@ -19,14 +19,6 @@ import (
 // right HTTP status.
 var ErrValidation = errors.New("validation error")
 
-// ErrPaymentAlreadyRefunded is returned by RefundPayment when the payment
-// has already been refunded.
-var ErrPaymentAlreadyRefunded = errors.New("payment already refunded")
-
-// ErrPaymentNotApproved is returned by RefundPayment when the payment isn't
-// in StatusApproved (e.g. it was declined) and so can't be refunded.
-var ErrPaymentNotApproved = errors.New("payment is not approved and cannot be refunded")
-
 // ErrCustomerNotFound is returned by CreatePayment when customer_id doesn't
 // exist (or doesn't belong to the authenticated merchant).
 var ErrCustomerNotFound = errors.New("customer not found")
@@ -55,8 +47,6 @@ type CreatePaymentInput struct {
 	Currency        string
 }
 
-type RefundInput struct{}
-
 type Service interface {
 	// ListPayments lists payments belonging to merchantID.
 	ListPayments(ctx context.Context, merchantID string) ([]Payment, error)
@@ -66,13 +56,6 @@ type Service interface {
 	// ErrPaymentNotFound if no payment with that id exists for that
 	// merchant.
 	GetPayment(ctx context.Context, merchantID, id string) (Payment, error)
-	// RefundPayment transitions an approved payment to StatusRefunded,
-	// scoped to merchantID. Returns an error wrapping ErrValidation if id
-	// isn't a valid UUID, ErrPaymentNotFound if no payment with that id
-	// exists for that merchant, ErrPaymentAlreadyRefunded if it was already
-	// refunded, or ErrPaymentNotApproved if it isn't currently approved
-	// (e.g. declined).
-	RefundPayment(ctx context.Context, merchantID, id string, in RefundInput) (Payment, error)
 }
 
 // DeclineConfig controls the probability that an otherwise-valid payment is
@@ -132,47 +115,6 @@ func (s *svc) GetPayment(ctx context.Context, merchantID, id string) (Payment, e
 		return Payment{}, fmt.Errorf("%w: id must be a valid UUID", ErrValidation)
 	}
 	return s.repo.GetByID(ctx, merchantID, id)
-}
-
-func (s *svc) RefundPayment(ctx context.Context, merchantID, id string, in RefundInput) (Payment, error) {
-	if _, err := uuid.Parse(id); err != nil {
-		return Payment{}, fmt.Errorf("%w: id must be a valid UUID", ErrValidation)
-	}
-
-	var refunded Payment
-	var deliveries []events.Delivery
-	err := s.tx.RunInTx(ctx, func(q database.Querier) error {
-		var err error
-		refunded, err = s.repo.WithQuerier(q).RefundPayment(ctx, merchantID, id)
-		if err != nil {
-			if !errors.Is(err, ErrRefundNotApplied) {
-				return err
-			}
-			// The conditional update matched no row; re-fetch to tell a
-			// missing payment apart from one that just isn't refundable
-			// right now.
-			existing, getErr := s.repo.WithQuerier(q).GetByID(ctx, merchantID, id)
-			if getErr != nil {
-				return getErr
-			}
-			if existing.Status == StatusRefunded {
-				return ErrPaymentAlreadyRefunded
-			}
-			return ErrPaymentNotApproved
-		}
-
-		deliveries, err = s.events.Publish(ctx, q, merchantID, "payment.refunded", refunded.ID, refunded)
-		return err
-	})
-	if err != nil {
-		return Payment{}, err
-	}
-
-	// Detach from the request context's cancellation (the HTTP response has
-	// already been decided) but keep any request-scoped values.
-	s.events.Dispatch(context.WithoutCancel(ctx), deliveries)
-
-	return refunded, nil
 }
 
 func (s *svc) CreatePayment(ctx context.Context, in CreatePaymentInput) (Payment, error) {

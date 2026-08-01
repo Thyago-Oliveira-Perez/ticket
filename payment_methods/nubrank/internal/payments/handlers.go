@@ -97,26 +97,3 @@ func (h *handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 
 	nubrankjson.Write(w, http.StatusCreated, payment)
 }
-
-func (h *handler) RefundPayment(w http.ResponseWriter, r *http.Request) {
-	merchantID, _ := auth.MerchantID(r.Context())
-	id := chi.URLParam(r, "id")
-
-	payment, err := h.service.RefundPayment(r.Context(), merchantID, id, RefundInput{})
-	if err != nil {
-		switch {
-		case errors.Is(err, ErrValidation):
-			http.Error(w, err.Error(), http.StatusBadRequest)
-		case errors.Is(err, ErrPaymentNotFound):
-			http.Error(w, err.Error(), http.StatusNotFound)
-		case errors.Is(err, ErrPaymentAlreadyRefunded), errors.Is(err, ErrPaymentNotApproved):
-			http.Error(w, err.Error(), http.StatusConflict)
-		default:
-			log.Println(err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
-		return
-	}
-
-	nubrankjson.Write(w, http.StatusOK, payment)
-}

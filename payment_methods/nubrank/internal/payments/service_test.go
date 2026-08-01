@@ -5,7 +5,6 @@ import (
 	"errors"
 	"sync"
 	"testing"
-	"time"
 
 	"nubrank/internal/customers"
 	"nubrank/internal/database"
@@ -55,22 +54,20 @@ func (f *fakeRepository) GetByID(ctx context.Context, merchantID, id string) (Pa
 	return Payment{}, ErrPaymentNotFound
 }
 
-func (f *fakeRepository) RefundPayment(ctx context.Context, merchantID, id string) (Payment, error) {
+func (f *fakeRepository) LockForUpdate(ctx context.Context, merchantID, id string) (Payment, error) {
+	return f.GetByID(ctx, merchantID, id)
+}
+
+func (f *fakeRepository) UpdateStatus(ctx context.Context, merchantID, id, status string) (Payment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for i, p := range f.payments {
-		if p.ID != id || p.MerchantID != merchantID {
-			continue
+		if p.ID == id && p.MerchantID == merchantID {
+			f.payments[i].Status = status
+			return f.payments[i], nil
 		}
-		if p.Status != StatusApproved {
-			return Payment{}, ErrRefundNotApplied
-		}
-		now := time.Now()
-		f.payments[i].Status = StatusRefunded
-		f.payments[i].RefundedAt = &now
-		return f.payments[i], nil
 	}
-	return Payment{}, ErrRefundNotApplied
+	return Payment{}, ErrPaymentNotFound
 }
 
 // fakeTxRunner runs fn directly with a nil Querier: none of the fakes in
@@ -267,93 +264,3 @@ func TestGetPayment_InvalidID_ReturnsValidationError(t *testing.T) {
 	}
 }
 
-func TestRefundPayment_ApprovedPayment_Refunds(t *testing.T) {
-	s := newTestService(&fakeRepository{}, newFakeEventPublisher(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
-
-	created, err := s.CreatePayment(context.Background(), validInput())
-	if err != nil {
-		t.Fatalf("CreatePayment returned error: %v", err)
-	}
-
-	refunded, err := s.RefundPayment(context.Background(), defaultMerchantID, created.ID, RefundInput{})
-	if err != nil {
-		t.Fatalf("RefundPayment returned error: %v", err)
-	}
-	if refunded.Status != StatusRefunded {
-		t.Fatalf("expected status %q, got %q", StatusRefunded, refunded.Status)
-	}
-	if refunded.RefundedAt == nil {
-		t.Fatal("expected RefundedAt to be set")
-	}
-}
-
-func TestRefundPayment_AlreadyRefunded_ReturnsAlreadyRefundedError(t *testing.T) {
-	s := newTestService(&fakeRepository{}, newFakeEventPublisher(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
-
-	created, err := s.CreatePayment(context.Background(), validInput())
-	if err != nil {
-		t.Fatalf("CreatePayment returned error: %v", err)
-	}
-	if _, err := s.RefundPayment(context.Background(), defaultMerchantID, created.ID, RefundInput{}); err != nil {
-		t.Fatalf("first RefundPayment returned error: %v", err)
-	}
-
-	_, err = s.RefundPayment(context.Background(), defaultMerchantID, created.ID, RefundInput{})
-	if !errors.Is(err, ErrPaymentAlreadyRefunded) {
-		t.Fatalf("expected ErrPaymentAlreadyRefunded, got %v", err)
-	}
-}
-
-func TestRefundPayment_DeclinedPayment_ReturnsNotApprovedError(t *testing.T) {
-	s := newTestService(&fakeRepository{}, newFakeEventPublisher(), DeclineConfig{Rate: 1}, alwaysOKVerifier{}, alwaysOKVerifier{})
-
-	created, err := s.CreatePayment(context.Background(), validInput())
-	if err != nil {
-		t.Fatalf("CreatePayment returned error: %v", err)
-	}
-	if created.Status != StatusDeclined {
-		t.Fatalf("expected test setup to produce a declined payment, got %q", created.Status)
-	}
-
-	_, err = s.RefundPayment(context.Background(), defaultMerchantID, created.ID, RefundInput{})
-	if !errors.Is(err, ErrPaymentNotApproved) {
-		t.Fatalf("expected ErrPaymentNotApproved, got %v", err)
-	}
-}
-
-func TestRefundPayment_UnknownID_ReturnsNotFound(t *testing.T) {
-	s := newTestService(&fakeRepository{}, newFakeEventPublisher(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
-
-	_, err := s.RefundPayment(context.Background(), defaultMerchantID, "11111111-1111-1111-1111-111111111111", RefundInput{})
-	if !errors.Is(err, ErrPaymentNotFound) {
-		t.Fatalf("expected ErrPaymentNotFound, got %v", err)
-	}
-}
-
-func TestRefundPayment_InvalidID_ReturnsValidationError(t *testing.T) {
-	s := newTestService(&fakeRepository{}, newFakeEventPublisher(), DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
-
-	_, err := s.RefundPayment(context.Background(), defaultMerchantID, "not-a-uuid", RefundInput{})
-	if !errors.Is(err, ErrValidation) {
-		t.Fatalf("expected ErrValidation, got %v", err)
-	}
-}
-
-func TestRefundPayment_PublishesRefundedEvent(t *testing.T) {
-	pub := newFakeEventPublisher()
-	s := newTestService(&fakeRepository{}, pub, DeclineConfig{}, alwaysOKVerifier{}, alwaysOKVerifier{})
-
-	created, err := s.CreatePayment(context.Background(), validInput())
-	if err != nil {
-		t.Fatalf("CreatePayment returned error: %v", err)
-	}
-
-	if _, err := s.RefundPayment(context.Background(), defaultMerchantID, created.ID, RefundInput{}); err != nil {
-		t.Fatalf("RefundPayment returned error: %v", err)
-	}
-
-	types := pub.eventTypes()
-	if len(types) != 2 || types[1] != "payment.refunded" {
-		t.Fatalf("expected a payment.approved event followed by a payment.refunded event, got %v", types)
-	}
-}

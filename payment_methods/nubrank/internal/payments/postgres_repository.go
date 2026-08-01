@@ -24,7 +24,7 @@ func (r *postgresRepository) WithQuerier(q database.Querier) Repository {
 
 func (r *postgresRepository) ListPayments(ctx context.Context, merchantID string) ([]Payment, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, refunded_at, created_at, updated_at
+		SELECT uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, created_at, updated_at
 		FROM payments
 		WHERE merchant_id = $1
 		ORDER BY created_at DESC
@@ -46,7 +46,6 @@ func (r *postgresRepository) ListPayments(ctx context.Context, merchantID string
 			&p.Currency,
 			&p.Status,
 			&p.DeclineReason,
-			&p.RefundedAt,
 			&p.CreatedAt,
 			&p.UpdatedAt,
 		); err != nil {
@@ -65,7 +64,7 @@ func (r *postgresRepository) CreatePayment(ctx context.Context, p Payment) (Paym
 	row := r.db.QueryRow(ctx, `
 		INSERT INTO payments (merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, refunded_at, created_at, updated_at
+		RETURNING uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, created_at, updated_at
 	`, p.MerchantID, p.CustomerID, p.PaymentMethodID, p.AmountMinor, p.Currency, p.Status, p.DeclineReason)
 
 	var created Payment
@@ -78,7 +77,6 @@ func (r *postgresRepository) CreatePayment(ctx context.Context, p Payment) (Paym
 		&created.Currency,
 		&created.Status,
 		&created.DeclineReason,
-		&created.RefundedAt,
 		&created.CreatedAt,
 		&created.UpdatedAt,
 	); err != nil {
@@ -90,11 +88,37 @@ func (r *postgresRepository) CreatePayment(ctx context.Context, p Payment) (Paym
 
 func (r *postgresRepository) GetByID(ctx context.Context, merchantID, id string) (Payment, error) {
 	row := r.db.QueryRow(ctx, `
-		SELECT uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, refunded_at, created_at, updated_at
+		SELECT uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, created_at, updated_at
 		FROM payments
 		WHERE uuid = $1 AND merchant_id = $2
 	`, id, merchantID)
 
+	return scanPayment(row)
+}
+
+func (r *postgresRepository) LockForUpdate(ctx context.Context, merchantID, id string) (Payment, error) {
+	row := r.db.QueryRow(ctx, `
+		SELECT uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, created_at, updated_at
+		FROM payments
+		WHERE uuid = $1 AND merchant_id = $2
+		FOR UPDATE
+	`, id, merchantID)
+
+	return scanPayment(row)
+}
+
+func (r *postgresRepository) UpdateStatus(ctx context.Context, merchantID, id, status string) (Payment, error) {
+	row := r.db.QueryRow(ctx, `
+		UPDATE payments
+		SET status = $3, updated_at = now()
+		WHERE uuid = $1 AND merchant_id = $2
+		RETURNING uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, created_at, updated_at
+	`, id, merchantID, status)
+
+	return scanPayment(row)
+}
+
+func scanPayment(row pgx.Row) (Payment, error) {
 	var p Payment
 	if err := row.Scan(
 		&p.ID,
@@ -105,46 +129,13 @@ func (r *postgresRepository) GetByID(ctx context.Context, merchantID, id string)
 		&p.Currency,
 		&p.Status,
 		&p.DeclineReason,
-		&p.RefundedAt,
 		&p.CreatedAt,
 		&p.UpdatedAt,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Payment{}, ErrPaymentNotFound
 		}
-		return Payment{}, fmt.Errorf("get payment by id: %w", err)
+		return Payment{}, fmt.Errorf("scan payment: %w", err)
 	}
-
-	return p, nil
-}
-
-func (r *postgresRepository) RefundPayment(ctx context.Context, merchantID, id string) (Payment, error) {
-	row := r.db.QueryRow(ctx, `
-		UPDATE payments
-		SET status = $2, refunded_at = now(), updated_at = now()
-		WHERE uuid = $1 AND merchant_id = $4 AND status = $3
-		RETURNING uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, refunded_at, created_at, updated_at
-	`, id, StatusRefunded, StatusApproved, merchantID)
-
-	var p Payment
-	if err := row.Scan(
-		&p.ID,
-		&p.MerchantID,
-		&p.CustomerID,
-		&p.PaymentMethodID,
-		&p.AmountMinor,
-		&p.Currency,
-		&p.Status,
-		&p.DeclineReason,
-		&p.RefundedAt,
-		&p.CreatedAt,
-		&p.UpdatedAt,
-	); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Payment{}, ErrRefundNotApplied
-		}
-		return Payment{}, fmt.Errorf("refund payment: %w", err)
-	}
-
 	return p, nil
 }

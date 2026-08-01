@@ -9,20 +9,14 @@ import (
 )
 
 const (
-	StatusApproved = "approved"
-	StatusDeclined = "declined"
-	StatusRefunded = "refunded"
+	StatusApproved          = "approved"
+	StatusDeclined          = "declined"
+	StatusRefunded          = "refunded"
+	StatusPartiallyRefunded = "partially_refunded"
 )
 
 // ErrPaymentNotFound is returned by lookups that find no matching payment.
 var ErrPaymentNotFound = errors.New("payment not found")
-
-// ErrRefundNotApplied is returned by RefundPayment when its conditional
-// update matches no row, i.e. the payment isn't currently approved (either
-// it doesn't exist, is declined, or was already refunded). Callers can't
-// tell which from this error alone and should re-fetch the payment by id to
-// find out.
-var ErrRefundNotApplied = errors.New("refund not applied")
 
 type Payment struct {
 	ID              string `json:"id"`
@@ -33,11 +27,9 @@ type Payment struct {
 	Currency        string `json:"currency"`
 	Status          string `json:"status"`
 	// DeclineReason is set when Status is StatusDeclined and nil otherwise.
-	DeclineReason *string `json:"decline_reason,omitempty"`
-	// RefundedAt is set when Status is StatusRefunded and nil otherwise.
-	RefundedAt *time.Time `json:"refunded_at,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
+	DeclineReason *string   `json:"decline_reason,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type Repository interface {
@@ -48,10 +40,16 @@ type Repository interface {
 	// caller can never look up another merchant's payment. Returns
 	// ErrPaymentNotFound if none exists.
 	GetByID(ctx context.Context, merchantID, id string) (Payment, error)
-	// RefundPayment atomically transitions a payment from StatusApproved to
-	// StatusRefunded, scoped to merchantID. Returns ErrRefundNotApplied if
-	// the payment isn't currently approved (or belongs to another merchant).
-	RefundPayment(ctx context.Context, merchantID, id string) (Payment, error)
+	// LockForUpdate is like GetByID but takes a row lock (SELECT ... FOR
+	// UPDATE), for callers (namely the refunds package) that need to
+	// safely read a payment's current amount/status and then act on it
+	// without racing a concurrent refund. Only meaningful when bound to a
+	// transaction via WithQuerier.
+	LockForUpdate(ctx context.Context, merchantID, id string) (Payment, error)
+	// UpdateStatus sets a payment's status directly. Used by the refunds
+	// package to transition a payment to StatusRefunded or
+	// StatusPartiallyRefunded once a refund has been recorded.
+	UpdateStatus(ctx context.Context, merchantID, id, status string) (Payment, error)
 	// WithQuerier returns a Repository bound to q instead of the pool, so
 	// its calls can participate in a transaction started elsewhere (e.g.
 	// atomically with an outbox event insert).
