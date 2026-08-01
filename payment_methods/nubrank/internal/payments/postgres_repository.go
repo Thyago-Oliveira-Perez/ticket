@@ -22,12 +22,13 @@ func NewPostgresRepository(db *pgxpool.Pool) Repository {
 	return &postgresRepository{db: db}
 }
 
-func (r *postgresRepository) ListPayments(ctx context.Context) ([]Payment, error) {
+func (r *postgresRepository) ListPayments(ctx context.Context, merchantID string) ([]Payment, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, idempotency_key, refunded_at, created_at, updated_at
 		FROM payments
+		WHERE merchant_id = $1
 		ORDER BY created_at DESC
-	`)
+	`, merchantID)
 	if err != nil {
 		return nil, fmt.Errorf("query payments: %w", err)
 	}
@@ -93,12 +94,12 @@ func (r *postgresRepository) CreatePayment(ctx context.Context, p Payment) (Paym
 	return created, nil
 }
 
-func (r *postgresRepository) GetByID(ctx context.Context, id string) (Payment, error) {
+func (r *postgresRepository) GetByID(ctx context.Context, merchantID, id string) (Payment, error) {
 	row := r.db.QueryRow(ctx, `
 		SELECT uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, idempotency_key, refunded_at, created_at, updated_at
 		FROM payments
-		WHERE uuid = $1
-	`, id)
+		WHERE uuid = $1 AND merchant_id = $2
+	`, id, merchantID)
 
 	var p Payment
 	if err := row.Scan(
@@ -124,13 +125,13 @@ func (r *postgresRepository) GetByID(ctx context.Context, id string) (Payment, e
 	return p, nil
 }
 
-func (r *postgresRepository) RefundPayment(ctx context.Context, id string) (Payment, error) {
+func (r *postgresRepository) RefundPayment(ctx context.Context, merchantID, id string) (Payment, error) {
 	row := r.db.QueryRow(ctx, `
 		UPDATE payments
 		SET status = $2, refunded_at = now(), updated_at = now()
-		WHERE uuid = $1 AND status = $3
+		WHERE uuid = $1 AND merchant_id = $4 AND status = $3
 		RETURNING uuid, merchant_id, customer_id, payment_method_id, amount_minor, currency, status, decline_reason, idempotency_key, refunded_at, created_at, updated_at
-	`, id, StatusRefunded, StatusApproved)
+	`, id, StatusRefunded, StatusApproved, merchantID)
 
 	var p Payment
 	if err := row.Scan(

@@ -48,16 +48,18 @@ type Payment struct {
 }
 
 type Repository interface {
-	ListPayments(ctx context.Context) ([]Payment, error)
+	// ListPayments lists payments belonging to merchantID.
+	ListPayments(ctx context.Context, merchantID string) ([]Payment, error)
 	CreatePayment(ctx context.Context, p Payment) (Payment, error)
 	// GetByIdempotencyKey looks up a payment by (merchant_id,
 	// idempotency_key). Returns ErrPaymentNotFound if none exists.
 	GetByIdempotencyKey(ctx context.Context, merchantID, idempotencyKey string) (Payment, error)
-	// GetByID looks up a payment by its id. Returns ErrPaymentNotFound if
-	// none exists.
-	GetByID(ctx context.Context, id string) (Payment, error)
+	// GetByID looks up a payment by its id, scoped to merchantID so a
+	// caller can never look up another merchant's payment. Returns
+	// ErrPaymentNotFound if none exists.
+	GetByID(ctx context.Context, merchantID, id string) (Payment, error)
 	// RefundPayment atomically transitions a payment from StatusApproved to
-	// StatusRefunded. Returns ErrRefundNotApplied if the payment isn't
-	// currently approved.
-	RefundPayment(ctx context.Context, id string) (Payment, error)
+	// StatusRefunded, scoped to merchantID. Returns ErrRefundNotApplied if
+	// the payment isn't currently approved (or belongs to another merchant).
+	RefundPayment(ctx context.Context, merchantID, id string) (Payment, error)
 }

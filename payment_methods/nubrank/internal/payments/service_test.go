@@ -15,10 +15,16 @@ type fakeRepository struct {
 	payments []Payment
 }
 
-func (f *fakeRepository) ListPayments(ctx context.Context) ([]Payment, error) {
+func (f *fakeRepository) ListPayments(ctx context.Context, merchantID string) ([]Payment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.payments, nil
+	var out []Payment
+	for _, p := range f.payments {
+		if p.MerchantID == merchantID {
+			out = append(out, p)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeRepository) CreatePayment(ctx context.Context, p Payment) (Payment, error) {
@@ -47,22 +53,22 @@ func (f *fakeRepository) GetByIdempotencyKey(ctx context.Context, merchantID, id
 	return Payment{}, ErrPaymentNotFound
 }
 
-func (f *fakeRepository) GetByID(ctx context.Context, id string) (Payment, error) {
+func (f *fakeRepository) GetByID(ctx context.Context, merchantID, id string) (Payment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, p := range f.payments {
-		if p.ID == id {
+		if p.ID == id && p.MerchantID == merchantID {
 			return p, nil
 		}
 	}
 	return Payment{}, ErrPaymentNotFound
 }
 
-func (f *fakeRepository) RefundPayment(ctx context.Context, id string) (Payment, error) {
+func (f *fakeRepository) RefundPayment(ctx context.Context, merchantID, id string) (Payment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for i, p := range f.payments {
-		if p.ID != id {
+		if p.ID != id || p.MerchantID != merchantID {
 			continue
 		}
 		if p.Status != StatusApproved {
@@ -100,9 +106,11 @@ func (f *fakeWebhookSender) Send(ctx context.Context, url, eventType string, dat
 	return nil
 }
 
+const defaultMerchantID = "11111111-1111-1111-1111-111111111111"
+
 func validInput() CreatePaymentInput {
 	return CreatePaymentInput{
-		MerchantID:      "11111111-1111-1111-1111-111111111111",
+		MerchantID:      defaultMerchantID,
 		CustomerID:      "22222222-2222-2222-2222-222222222222",
 		PaymentMethodID: "33333333-3333-3333-3333-333333333333",
 		AmountMinor:     5000,
@@ -272,7 +280,7 @@ func TestGetPayment_ExistingID_ReturnsPayment(t *testing.T) {
 		t.Fatalf("CreatePayment returned error: %v", err)
 	}
 
-	got, err := s.GetPayment(context.Background(), created.ID)
+	got, err := s.GetPayment(context.Background(), defaultMerchantID, created.ID)
 	if err != nil {
 		t.Fatalf("GetPayment returned error: %v", err)
 	}
@@ -284,7 +292,7 @@ func TestGetPayment_ExistingID_ReturnsPayment(t *testing.T) {
 func TestGetPayment_UnknownID_ReturnsNotFound(t *testing.T) {
 	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{})
 
-	_, err := s.GetPayment(context.Background(), "11111111-1111-1111-1111-111111111111")
+	_, err := s.GetPayment(context.Background(), defaultMerchantID, "11111111-1111-1111-1111-111111111111")
 	if !errors.Is(err, ErrPaymentNotFound) {
 		t.Fatalf("expected ErrPaymentNotFound, got %v", err)
 	}
@@ -293,7 +301,7 @@ func TestGetPayment_UnknownID_ReturnsNotFound(t *testing.T) {
 func TestGetPayment_InvalidID_ReturnsValidationError(t *testing.T) {
 	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{})
 
-	_, err := s.GetPayment(context.Background(), "not-a-uuid")
+	_, err := s.GetPayment(context.Background(), defaultMerchantID, "not-a-uuid")
 	if !errors.Is(err, ErrValidation) {
 		t.Fatalf("expected ErrValidation, got %v", err)
 	}
@@ -307,7 +315,7 @@ func TestRefundPayment_ApprovedPayment_Refunds(t *testing.T) {
 		t.Fatalf("CreatePayment returned error: %v", err)
 	}
 
-	refunded, err := s.RefundPayment(context.Background(), created.ID, RefundInput{})
+	refunded, err := s.RefundPayment(context.Background(), defaultMerchantID, created.ID, RefundInput{})
 	if err != nil {
 		t.Fatalf("RefundPayment returned error: %v", err)
 	}
@@ -326,11 +334,11 @@ func TestRefundPayment_AlreadyRefunded_ReturnsAlreadyRefundedError(t *testing.T)
 	if err != nil {
 		t.Fatalf("CreatePayment returned error: %v", err)
 	}
-	if _, err := s.RefundPayment(context.Background(), created.ID, RefundInput{}); err != nil {
+	if _, err := s.RefundPayment(context.Background(), defaultMerchantID, created.ID, RefundInput{}); err != nil {
 		t.Fatalf("first RefundPayment returned error: %v", err)
 	}
 
-	_, err = s.RefundPayment(context.Background(), created.ID, RefundInput{})
+	_, err = s.RefundPayment(context.Background(), defaultMerchantID, created.ID, RefundInput{})
 	if !errors.Is(err, ErrPaymentAlreadyRefunded) {
 		t.Fatalf("expected ErrPaymentAlreadyRefunded, got %v", err)
 	}
@@ -347,7 +355,7 @@ func TestRefundPayment_DeclinedPayment_ReturnsNotApprovedError(t *testing.T) {
 		t.Fatalf("expected test setup to produce a declined payment, got %q", created.Status)
 	}
 
-	_, err = s.RefundPayment(context.Background(), created.ID, RefundInput{})
+	_, err = s.RefundPayment(context.Background(), defaultMerchantID, created.ID, RefundInput{})
 	if !errors.Is(err, ErrPaymentNotApproved) {
 		t.Fatalf("expected ErrPaymentNotApproved, got %v", err)
 	}
@@ -356,7 +364,7 @@ func TestRefundPayment_DeclinedPayment_ReturnsNotApprovedError(t *testing.T) {
 func TestRefundPayment_UnknownID_ReturnsNotFound(t *testing.T) {
 	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{})
 
-	_, err := s.RefundPayment(context.Background(), "11111111-1111-1111-1111-111111111111", RefundInput{})
+	_, err := s.RefundPayment(context.Background(), defaultMerchantID, "11111111-1111-1111-1111-111111111111", RefundInput{})
 	if !errors.Is(err, ErrPaymentNotFound) {
 		t.Fatalf("expected ErrPaymentNotFound, got %v", err)
 	}
@@ -365,7 +373,7 @@ func TestRefundPayment_UnknownID_ReturnsNotFound(t *testing.T) {
 func TestRefundPayment_InvalidID_ReturnsValidationError(t *testing.T) {
 	s := NewService(&fakeRepository{}, newFakeWebhookSender(), DeclineConfig{})
 
-	_, err := s.RefundPayment(context.Background(), "not-a-uuid", RefundInput{})
+	_, err := s.RefundPayment(context.Background(), defaultMerchantID, "not-a-uuid", RefundInput{})
 	if !errors.Is(err, ErrValidation) {
 		t.Fatalf("expected ErrValidation, got %v", err)
 	}
@@ -380,7 +388,7 @@ func TestRefundPayment_SendsRefundedWebhook(t *testing.T) {
 		t.Fatalf("CreatePayment returned error: %v", err)
 	}
 
-	if _, err := s.RefundPayment(context.Background(), created.ID, RefundInput{WebhookURL: "https://example.com/hook"}); err != nil {
+	if _, err := s.RefundPayment(context.Background(), defaultMerchantID, created.ID, RefundInput{WebhookURL: "https://example.com/hook"}); err != nil {
 		t.Fatalf("RefundPayment returned error: %v", err)
 	}
 

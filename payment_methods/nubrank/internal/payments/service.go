@@ -55,18 +55,21 @@ type RefundInput struct {
 }
 
 type Service interface {
-	ListPayments(ctx context.Context) ([]Payment, error)
+	// ListPayments lists payments belonging to merchantID.
+	ListPayments(ctx context.Context, merchantID string) ([]Payment, error)
 	CreatePayment(ctx context.Context, in CreatePaymentInput) (Payment, error)
-	// GetPayment looks up a payment by id. Returns an error wrapping
-	// ErrValidation if id isn't a valid UUID, or ErrPaymentNotFound if no
-	// payment with that id exists.
-	GetPayment(ctx context.Context, id string) (Payment, error)
-	// RefundPayment transitions an approved payment to StatusRefunded.
-	// Returns an error wrapping ErrValidation if id isn't a valid UUID,
-	// ErrPaymentNotFound if no payment with that id exists,
-	// ErrPaymentAlreadyRefunded if it was already refunded, or
-	// ErrPaymentNotApproved if it isn't currently approved (e.g. declined).
-	RefundPayment(ctx context.Context, id string, in RefundInput) (Payment, error)
+	// GetPayment looks up a payment by id, scoped to merchantID. Returns an
+	// error wrapping ErrValidation if id isn't a valid UUID, or
+	// ErrPaymentNotFound if no payment with that id exists for that
+	// merchant.
+	GetPayment(ctx context.Context, merchantID, id string) (Payment, error)
+	// RefundPayment transitions an approved payment to StatusRefunded,
+	// scoped to merchantID. Returns an error wrapping ErrValidation if id
+	// isn't a valid UUID, ErrPaymentNotFound if no payment with that id
+	// exists for that merchant, ErrPaymentAlreadyRefunded if it was already
+	// refunded, or ErrPaymentNotApproved if it isn't currently approved
+	// (e.g. declined).
+	RefundPayment(ctx context.Context, merchantID, id string, in RefundInput) (Payment, error)
 }
 
 // DeclineConfig controls the probability that an otherwise-valid payment is
@@ -111,18 +114,18 @@ func NewService(repo Repository, webhooks WebhookSender, decline DeclineConfig) 
 	}
 }
 
-func (s *svc) ListPayments(ctx context.Context) ([]Payment, error) {
-	return s.repo.ListPayments(ctx)
+func (s *svc) ListPayments(ctx context.Context, merchantID string) ([]Payment, error) {
+	return s.repo.ListPayments(ctx, merchantID)
 }
 
-func (s *svc) GetPayment(ctx context.Context, id string) (Payment, error) {
+func (s *svc) GetPayment(ctx context.Context, merchantID, id string) (Payment, error) {
 	if _, err := uuid.Parse(id); err != nil {
 		return Payment{}, fmt.Errorf("%w: id must be a valid UUID", ErrValidation)
 	}
-	return s.repo.GetByID(ctx, id)
+	return s.repo.GetByID(ctx, merchantID, id)
 }
 
-func (s *svc) RefundPayment(ctx context.Context, id string, in RefundInput) (Payment, error) {
+func (s *svc) RefundPayment(ctx context.Context, merchantID, id string, in RefundInput) (Payment, error) {
 	if _, err := uuid.Parse(id); err != nil {
 		return Payment{}, fmt.Errorf("%w: id must be a valid UUID", ErrValidation)
 	}
@@ -130,14 +133,14 @@ func (s *svc) RefundPayment(ctx context.Context, id string, in RefundInput) (Pay
 		return Payment{}, err
 	}
 
-	refunded, err := s.repo.RefundPayment(ctx, id)
+	refunded, err := s.repo.RefundPayment(ctx, merchantID, id)
 	if err != nil {
 		if !errors.Is(err, ErrRefundNotApplied) {
 			return Payment{}, err
 		}
 		// The conditional update matched no row; re-fetch to tell a missing
 		// payment apart from one that just isn't refundable right now.
-		existing, getErr := s.repo.GetByID(ctx, id)
+		existing, getErr := s.repo.GetByID(ctx, merchantID, id)
 		if getErr != nil {
 			return Payment{}, getErr
 		}

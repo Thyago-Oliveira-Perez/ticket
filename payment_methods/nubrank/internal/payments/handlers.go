@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 
+	"nubrank/internal/auth"
 	nubrankjson "nubrank/internal/json"
 
 	"github.com/go-chi/chi/v5"
@@ -23,7 +24,9 @@ func NewHandler(service Service) *handler {
 }
 
 func (h *handler) ListPayments(w http.ResponseWriter, r *http.Request) {
-	payments, err := h.service.ListPayments(r.Context())
+	merchantID, _ := auth.MerchantID(r.Context())
+
+	payments, err := h.service.ListPayments(r.Context(), merchantID)
 
 	if err != nil {
 		log.Println(err)
@@ -35,9 +38,10 @@ func (h *handler) ListPayments(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) GetPayment(w http.ResponseWriter, r *http.Request) {
+	merchantID, _ := auth.MerchantID(r.Context())
 	id := chi.URLParam(r, "id")
 
-	payment, err := h.service.GetPayment(r.Context(), id)
+	payment, err := h.service.GetPayment(r.Context(), merchantID, id)
 	if err != nil {
 		if errors.Is(err, ErrValidation) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -56,7 +60,6 @@ func (h *handler) GetPayment(w http.ResponseWriter, r *http.Request) {
 }
 
 type createPaymentRequest struct {
-	MerchantID      string `json:"merchant_id"`
 	CustomerID      string `json:"customer_id"`
 	PaymentMethodID string `json:"payment_method_id"`
 	AmountMinor     int64  `json:"amount_minor"`
@@ -65,6 +68,8 @@ type createPaymentRequest struct {
 }
 
 func (h *handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
+	merchantID, _ := auth.MerchantID(r.Context())
+
 	var req createPaymentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -72,7 +77,7 @@ func (h *handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	payment, err := h.service.CreatePayment(r.Context(), CreatePaymentInput{
-		MerchantID:      req.MerchantID,
+		MerchantID:      merchantID,
 		CustomerID:      req.CustomerID,
 		PaymentMethodID: req.PaymentMethodID,
 		AmountMinor:     req.AmountMinor,
@@ -98,6 +103,7 @@ type refundPaymentRequest struct {
 }
 
 func (h *handler) RefundPayment(w http.ResponseWriter, r *http.Request) {
+	merchantID, _ := auth.MerchantID(r.Context())
 	id := chi.URLParam(r, "id")
 
 	var req refundPaymentRequest
@@ -106,7 +112,7 @@ func (h *handler) RefundPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payment, err := h.service.RefundPayment(r.Context(), id, RefundInput{WebhookURL: req.WebhookURL})
+	payment, err := h.service.RefundPayment(r.Context(), merchantID, id, RefundInput{WebhookURL: req.WebhookURL})
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrValidation):

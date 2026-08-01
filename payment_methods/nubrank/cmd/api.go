@@ -3,7 +3,9 @@ package main
 import (
 	"log"
 	"net/http"
+	"nubrank/internal/auth"
 	"nubrank/internal/chaos"
+	"nubrank/internal/merchants"
 	"nubrank/internal/payments"
 	"nubrank/internal/webhook"
 	"time"
@@ -41,14 +43,25 @@ func (app *application) mount() http.Handler {
 		w.Write([]byte("hello world"))
 	})
 
+	merchantRepo := merchants.NewPostgresRepository(app.db)
+	merchantService := merchants.NewService(merchantRepo)
+	merchantHandler := merchants.NewHandler(merchantService)
+	r.Post("/merchants", merchantHandler.CreateMerchant)
+
 	paymentRepo := payments.NewPostgresRepository(app.db)
 	webhookSender := webhook.NewSender(app.config.webhook)
 	paymentService := payments.NewService(paymentRepo, webhookSender, app.config.paymentDecline)
 	paymentHandler := payments.NewHandler(paymentService)
-	r.Get("/payments", paymentHandler.ListPayments)
-	r.Post("/payments", paymentHandler.CreatePayment)
-	r.Get("/payments/{id}", paymentHandler.GetPayment)
-	r.Post("/payments/{id}/refund", paymentHandler.RefundPayment)
+
+	// Every route below requires a valid merchant API key.
+	r.Group(func(r chi.Router) {
+		r.Use(auth.Middleware(merchantService))
+
+		r.Get("/payments", paymentHandler.ListPayments)
+		r.Post("/payments", paymentHandler.CreatePayment)
+		r.Get("/payments/{id}", paymentHandler.GetPayment)
+		r.Post("/payments/{id}/refund", paymentHandler.RefundPayment)
+	})
 
 	return r
 }
