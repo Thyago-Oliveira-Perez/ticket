@@ -7,6 +7,7 @@ import (
 	"nubrank/internal/chaos"
 	"nubrank/internal/customers"
 	"nubrank/internal/database"
+	"nubrank/internal/disputes"
 	"nubrank/internal/events"
 	"nubrank/internal/idempotency"
 	"nubrank/internal/ledger"
@@ -78,7 +79,12 @@ func (app *application) mount() http.Handler {
 	ledgerService := ledger.NewService(ledgerRepo)
 
 	paymentRepo := payments.NewPostgresRepository(app.db)
-	paymentService := payments.NewService(paymentRepo, txRunner, eventPublisher, ledgerService, app.config.paymentDecline, customerService, paymentMethodService)
+
+	disputeRepo := disputes.NewPostgresRepository(app.db)
+	disputeService := disputes.NewService(disputeRepo, paymentRepo, txRunner, eventPublisher, ledgerService, app.config.paymentDispute)
+	disputeHandler := disputes.NewHandler(disputeService)
+
+	paymentService := payments.NewService(paymentRepo, txRunner, eventPublisher, ledgerService, disputeService, app.config.paymentDecline, customerService, paymentMethodService)
 	paymentHandler := payments.NewHandler(paymentService)
 
 	refundRepo := refunds.NewPostgresRepository(app.db)
@@ -107,6 +113,7 @@ func (app *application) mount() http.Handler {
 		r.Get("/payments/{id}", paymentHandler.GetPayment)
 		r.With(idempotent).Post("/payments/{id}/refunds", refundHandler.CreateRefund)
 		r.Get("/payments/{id}/refunds", refundHandler.ListRefunds)
+		r.Get("/payments/{id}/disputes", disputeHandler.ListDisputes)
 
 		r.Get("/payouts", payoutHandler.ListPayouts)
 		r.With(idempotent).Post("/payouts", payoutHandler.CreatePayout)
@@ -144,6 +151,7 @@ type config struct {
 	chaos chaos.Config
 	webhook webhook.Config
 	paymentDecline payments.DeclineConfig
+	paymentDispute disputes.Config
 }
 
 type dbConfig struct {

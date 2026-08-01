@@ -147,8 +147,15 @@ func (fakeLedgerPoster) Post(ctx context.Context, q database.Querier, merchantID
 	return nil
 }
 
+// fakeDisputeSimulator is a no-op: payments tests care about payment/event
+// behavior, not dispute simulation (covered separately in internal/disputes).
+type fakeDisputeSimulator struct{}
+
+func (fakeDisputeSimulator) MaybeDispute(ctx context.Context, merchantID, paymentID string, amountMinor int64) {
+}
+
 func newTestService(repo Repository, pub events.Publisher, decline DeclineConfig, customerVerifier CustomerVerifier, paymentMethodVerifier PaymentMethodVerifier) Service {
-	return NewService(repo, fakeTxRunner{}, pub, fakeLedgerPoster{}, decline, customerVerifier, paymentMethodVerifier)
+	return NewService(repo, fakeTxRunner{}, pub, fakeLedgerPoster{}, fakeDisputeSimulator{}, decline, customerVerifier, paymentMethodVerifier)
 }
 
 func TestCreatePayment_DeclineDisabled_AlwaysApproved(t *testing.T) {
@@ -271,4 +278,3 @@ func TestGetPayment_InvalidID_ReturnsValidationError(t *testing.T) {
 		t.Fatalf("expected ErrValidation, got %v", err)
 	}
 }
-

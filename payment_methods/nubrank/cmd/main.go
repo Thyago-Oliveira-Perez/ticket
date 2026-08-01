@@ -9,6 +9,7 @@ import (
 
 	"nubrank/internal/chaos"
 	"nubrank/internal/database"
+	"nubrank/internal/disputes"
 	"nubrank/internal/payments"
 	"nubrank/internal/webhook"
 
@@ -39,6 +40,14 @@ func main () {
 		},
 		paymentDecline: payments.DeclineConfig{
 			Rate: envOrFloat("PAYMENT_DECLINE_RATE", 0),
+		},
+		paymentDispute: disputes.Config{
+			Rate:             envOrFloat("PAYMENT_DISPUTE_RATE", 0),
+			WinRate:          envOrFloat("PAYMENT_DISPUTE_WIN_RATE", 0.5),
+			OpenDelayMin:     time.Duration(envOrInt("CHAOS_DISPUTE_OPEN_DELAY_MIN_MS", 0)) * time.Millisecond,
+			OpenDelayMax:     time.Duration(envOrInt("CHAOS_DISPUTE_OPEN_DELAY_MAX_MS", 0)) * time.Millisecond,
+			ResolveDelayMin:  time.Duration(envOrInt("CHAOS_DISPUTE_RESOLVE_DELAY_MIN_MS", 0)) * time.Millisecond,
+			ResolveDelayMax:  time.Duration(envOrInt("CHAOS_DISPUTE_RESOLVE_DELAY_MAX_MS", 0)) * time.Millisecond,
 		},
 	}
 

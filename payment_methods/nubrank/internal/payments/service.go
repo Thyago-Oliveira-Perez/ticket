@@ -45,6 +45,12 @@ type LedgerPoster interface {
 	Post(ctx context.Context, q database.Querier, merchantID, referenceType, referenceID, kind string, merchantAccountDelta int64) error
 }
 
+// DisputeSimulator is the subset of disputes.Service CreatePayment needs:
+// rolling the dice on a newly-approved payment for a simulated chargeback.
+type DisputeSimulator interface {
+	MaybeDispute(ctx context.Context, merchantID, paymentID string, amountMinor int64)
+}
+
 type CreatePaymentInput struct {
 	MerchantID      string
 	CustomerID      string
@@ -87,6 +93,7 @@ type svc struct {
 	tx             database.TxRunner
 	events         events.Publisher
 	ledger         LedgerPoster
+	disputes       DisputeSimulator
 	decline        DeclineConfig
 	customers      CustomerVerifier
 	paymentMethods PaymentMethodVerifier
@@ -96,12 +103,13 @@ type svc struct {
 	pickReason  func() string
 }
 
-func NewService(repo Repository, tx database.TxRunner, eventPublisher events.Publisher, ledgerPoster LedgerPoster, decline DeclineConfig, customerVerifier CustomerVerifier, paymentMethodVerifier PaymentMethodVerifier) Service {
+func NewService(repo Repository, tx database.TxRunner, eventPublisher events.Publisher, ledgerPoster LedgerPoster, disputeSimulator DisputeSimulator, decline DeclineConfig, customerVerifier CustomerVerifier, paymentMethodVerifier PaymentMethodVerifier) Service {
 	return &svc{
 		repo:           repo,
 		tx:             tx,
 		events:         eventPublisher,
 		ledger:         ledgerPoster,
+		disputes:       disputeSimulator,
 		decline:        decline,
 		customers:      customerVerifier,
 		paymentMethods: paymentMethodVerifier,
@@ -180,7 +188,11 @@ func (s *svc) CreatePayment(ctx context.Context, in CreatePaymentInput) (Payment
 
 	// Detach from the request context's cancellation (the HTTP response has
 	// already been decided) but keep any request-scoped values.
-	s.events.Dispatch(context.WithoutCancel(ctx), deliveries)
+	detachedCtx := context.WithoutCancel(ctx)
+	s.events.Dispatch(detachedCtx, deliveries)
+	if created.Status == StatusApproved {
+		s.disputes.MaybeDispute(detachedCtx, in.MerchantID, created.ID, created.AmountMinor)
+	}
 
 	return created, nil
 }
