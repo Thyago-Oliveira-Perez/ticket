@@ -29,22 +29,22 @@ var ErrIdempotencyKeyConflict = errors.New("idempotency key conflict")
 var ErrRefundNotApplied = errors.New("refund not applied")
 
 type Payment struct {
-	ID              string
-	MerchantID      string
-	CustomerID      string
-	PaymentMethodID string
-	AmountMinor     int64
-	Currency        string
-	Status          string
+	ID              string `json:"id"`
+	MerchantID      string `json:"merchant_id"`
+	CustomerID      string `json:"customer_id"`
+	PaymentMethodID string `json:"payment_method_id"`
+	AmountMinor     int64  `json:"amount_minor"`
+	Currency        string `json:"currency"`
+	Status          string `json:"status"`
 	// DeclineReason is set when Status is StatusDeclined and nil otherwise.
-	DeclineReason *string
+	DeclineReason *string `json:"decline_reason,omitempty"`
 	// IdempotencyKey is set when the caller supplied one on creation, nil
 	// otherwise.
-	IdempotencyKey *string
+	IdempotencyKey *string `json:"idempotency_key,omitempty"`
 	// RefundedAt is set when Status is StatusRefunded and nil otherwise.
-	RefundedAt *time.Time
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	RefundedAt *time.Time `json:"refunded_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
 type Repository interface {
