@@ -43,13 +43,13 @@ The transactional path (MySQL) and the analytical path are kept separate. Domain
 | **Ticketing**         | .NET     | Issues tickets and e-ticket PDFs after successful payment             |
 | **Payment provider**  | Go       | Fake payment gateway (failure injection, webhooks)                    |
 | **Fraud provider**    | Go       | Fake fraud/identity check                                             |
-| **Notification**      | Go       | Fake email/SMS delivery                                               |
+| **Notification**      | Node.js  | Fake email/SMS delivery                                               |
 
 .NET services use MediatR internally; resilience around provider calls uses Polly.
 
 ### The providers are deliberately hostile
 
-The Go providers simulate the real world's unreliability. Each exposes configuration for injected latency, random `500`s, rate limiting, duplicate webhooks, and out-of-order webhook delivery. The .NET side is built to survive all of it — that's the whole reason they exist. They also model the *other* side of an integration: how to design an external API that behaves under stress.
+The external providers (Payment and Fraud in Go, Notification in Node.js) simulate the real world's unreliability. Each exposes configuration for injected latency, random `500`s, rate limiting, duplicate webhooks, and out-of-order webhook delivery. The .NET side is built to survive all of it — that's the whole reason they exist. They also model the *other* side of an integration: how to design an external API that behaves under stress.
 
 ## Infrastructure
 
@@ -63,7 +63,7 @@ The Go providers simulate the real world's unreliability. Each exposes configura
 | Kubernetes  | Orchestration; HPA autoscales checkout/reservation during a drop                  |
 | React       | Buyer seat-picker and admin dashboard; live availability over SSE/websockets      |
 
-Observability is end-to-end: OpenTelemetry tracing across the .NET and Go services, Prometheus + Grafana metrics, and structured logs correlated by a single id, so one checkout can be followed across every hop.
+Observability is end-to-end: OpenTelemetry tracing across the .NET, Go, and Node.js services, Prometheus + Grafana metrics, and structured logs correlated by a single id, so one checkout can be followed across every hop.
 
 ## Architecture
 
@@ -72,7 +72,7 @@ Observability is end-to-end: OpenTelemetry tracing across the .NET and Go servic
 ## Tech stack
 
 - **Core services:** .NET, MediatR, Polly
-- **External providers:** Go
+- **External providers:** Go (Payment, Fraud) · Node.js (Notification)
 - **Datastores:** MySQL · Redis · ClickHouse
 - **Messaging:** RabbitMQ
 - **Frontend:** React (SSE/websockets)
@@ -90,7 +90,7 @@ Early. The build proceeds as thin vertical slices that each touch the whole stac
 
 1. Walking skeleton — create an event, list it, render it in React, with the local stack in Docker Compose.
 2. Catalog and the seat-oversell problem (optimistic concurrency + reservation TTLs).
-3. Go providers with failure injection.
+3. External providers with failure injection (Go for Payment/Fraud, Node.js for Notification).
 4. Checkout saga, idempotency, and provider resilience.
 5. Reliable messaging — outbox, RabbitMQ topology, idempotent consumers, DLQs.
 6. Caching and the waiting room.
