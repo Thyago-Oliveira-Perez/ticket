@@ -39,6 +39,12 @@ type PaymentMethodVerifier interface {
 	VerifyOwnership(ctx context.Context, customerID, paymentMethodID string) error
 }
 
+// LedgerPoster is the subset of ledger.Service CreatePayment needs: posting
+// a balanced double-entry transaction for an approved charge.
+type LedgerPoster interface {
+	Post(ctx context.Context, q database.Querier, merchantID, referenceType, referenceID, kind string, merchantAccountDelta int64) error
+}
+
 type CreatePaymentInput struct {
 	MerchantID      string
 	CustomerID      string
@@ -80,6 +86,7 @@ type svc struct {
 	repo           Repository
 	tx             database.TxRunner
 	events         events.Publisher
+	ledger         LedgerPoster
 	decline        DeclineConfig
 	customers      CustomerVerifier
 	paymentMethods PaymentMethodVerifier
@@ -89,11 +96,12 @@ type svc struct {
 	pickReason  func() string
 }
 
-func NewService(repo Repository, tx database.TxRunner, eventPublisher events.Publisher, decline DeclineConfig, customerVerifier CustomerVerifier, paymentMethodVerifier PaymentMethodVerifier) Service {
+func NewService(repo Repository, tx database.TxRunner, eventPublisher events.Publisher, ledgerPoster LedgerPoster, decline DeclineConfig, customerVerifier CustomerVerifier, paymentMethodVerifier PaymentMethodVerifier) Service {
 	return &svc{
 		repo:           repo,
 		tx:             tx,
 		events:         eventPublisher,
+		ledger:         ledgerPoster,
 		decline:        decline,
 		customers:      customerVerifier,
 		paymentMethods: paymentMethodVerifier,
@@ -160,6 +168,8 @@ func (s *svc) CreatePayment(ctx context.Context, in CreatePaymentInput) (Payment
 		eventType := "payment.approved"
 		if created.Status == StatusDeclined {
 			eventType = "payment.declined"
+		} else if err := s.ledger.Post(ctx, q, in.MerchantID, "payment", created.ID, "charge", created.AmountMinor); err != nil {
+			return err
 		}
 		deliveries, err = s.events.Publish(ctx, q, in.MerchantID, eventType, created.ID, created)
 		return err

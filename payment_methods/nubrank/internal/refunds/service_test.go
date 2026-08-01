@@ -122,8 +122,16 @@ func (f *fakeEventPublisher) Publish(ctx context.Context, q database.Querier, me
 
 func (f *fakeEventPublisher) Dispatch(ctx context.Context, deliveries []events.Delivery) {}
 
+// fakeLedgerPoster is a no-op: refunds tests care about refund/payment
+// behavior, not ledger postings (covered separately in internal/ledger).
+type fakeLedgerPoster struct{}
+
+func (fakeLedgerPoster) Post(ctx context.Context, q database.Querier, merchantID, referenceType, referenceID, kind string, merchantAccountDelta int64) error {
+	return nil
+}
+
 func newTestService(refundsRepo Repository, paymentsRepo payments.Repository, pub events.Publisher) Service {
-	return NewService(refundsRepo, paymentsRepo, fakeTxRunner{}, pub)
+	return NewService(refundsRepo, paymentsRepo, fakeTxRunner{}, pub, fakeLedgerPoster{})
 }
 
 func approvedPayment(amount int64) payments.Payment {

@@ -139,8 +139,16 @@ func validInput() CreatePaymentInput {
 	}
 }
 
+// fakeLedgerPoster is a no-op: payments tests care about payment/event
+// behavior, not ledger postings (covered separately in internal/ledger).
+type fakeLedgerPoster struct{}
+
+func (fakeLedgerPoster) Post(ctx context.Context, q database.Querier, merchantID, referenceType, referenceID, kind string, merchantAccountDelta int64) error {
+	return nil
+}
+
 func newTestService(repo Repository, pub events.Publisher, decline DeclineConfig, customerVerifier CustomerVerifier, paymentMethodVerifier PaymentMethodVerifier) Service {
-	return NewService(repo, fakeTxRunner{}, pub, decline, customerVerifier, paymentMethodVerifier)
+	return NewService(repo, fakeTxRunner{}, pub, fakeLedgerPoster{}, decline, customerVerifier, paymentMethodVerifier)
 }
 
 func TestCreatePayment_DeclineDisabled_AlwaysApproved(t *testing.T) {

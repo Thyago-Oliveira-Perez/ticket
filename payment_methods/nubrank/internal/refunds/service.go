@@ -32,6 +32,12 @@ type CreateRefundInput struct {
 	AmountMinor int64
 }
 
+// LedgerPoster is the subset of ledger.Service CreateRefund needs: posting
+// a balanced double-entry reversal.
+type LedgerPoster interface {
+	Post(ctx context.Context, q database.Querier, merchantID, referenceType, referenceID, kind string, merchantAccountDelta int64) error
+}
+
 type Service interface {
 	// CreateRefund records a (possibly partial) refund of paymentID,
 	// scoped to merchantID. Returns an error wrapping ErrValidation if
@@ -51,10 +57,11 @@ type svc struct {
 	payments payments.Repository
 	tx       database.TxRunner
 	events   events.Publisher
+	ledger   LedgerPoster
 }
 
-func NewService(repo Repository, paymentsRepo payments.Repository, tx database.TxRunner, eventPublisher events.Publisher) Service {
-	return &svc{repo: repo, payments: paymentsRepo, tx: tx, events: eventPublisher}
+func NewService(repo Repository, paymentsRepo payments.Repository, tx database.TxRunner, eventPublisher events.Publisher, ledgerPoster LedgerPoster) Service {
+	return &svc{repo: repo, payments: paymentsRepo, tx: tx, events: eventPublisher, ledger: ledgerPoster}
 }
 
 func (s *svc) CreateRefund(ctx context.Context, merchantID, paymentID string, in CreateRefundInput) (Refund, error) {
@@ -103,6 +110,10 @@ func (s *svc) CreateRefund(ctx context.Context, merchantID, paymentID string, in
 			newStatus = payments.StatusRefunded
 		}
 		if _, err := paymentsRepo.UpdateStatus(ctx, merchantID, paymentID, newStatus); err != nil {
+			return err
+		}
+
+		if err := s.ledger.Post(ctx, q, merchantID, "refund", created.ID, "refund", -amount); err != nil {
 			return err
 		}
 

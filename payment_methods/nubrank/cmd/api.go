@@ -9,6 +9,7 @@ import (
 	"nubrank/internal/database"
 	"nubrank/internal/events"
 	"nubrank/internal/idempotency"
+	"nubrank/internal/ledger"
 	"nubrank/internal/merchants"
 	"nubrank/internal/paymentmethods"
 	"nubrank/internal/payments"
@@ -72,12 +73,15 @@ func (app *application) mount() http.Handler {
 	eventPublisher := events.NewService(eventRepo, webhookEndpointService, webhookSender)
 
 	txRunner := database.NewTxRunner(app.db)
+	ledgerRepo := ledger.NewPostgresRepository(app.db)
+	ledgerService := ledger.NewService(ledgerRepo)
+
 	paymentRepo := payments.NewPostgresRepository(app.db)
-	paymentService := payments.NewService(paymentRepo, txRunner, eventPublisher, app.config.paymentDecline, customerService, paymentMethodService)
+	paymentService := payments.NewService(paymentRepo, txRunner, eventPublisher, ledgerService, app.config.paymentDecline, customerService, paymentMethodService)
 	paymentHandler := payments.NewHandler(paymentService)
 
 	refundRepo := refunds.NewPostgresRepository(app.db)
-	refundService := refunds.NewService(refundRepo, paymentRepo, txRunner, eventPublisher)
+	refundService := refunds.NewService(refundRepo, paymentRepo, txRunner, eventPublisher, ledgerService)
 	refundHandler := refunds.NewHandler(refundService)
 
 	idempotencyRepo := idempotency.NewPostgresRepository(app.db)
