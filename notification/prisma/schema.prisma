@@ -1,0 +1,184 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DB_DSN")
+}
+
+enum AccountStatus {
+  active
+  suspended
+
+  @@map("account_status")
+}
+
+enum ApiKeyScope {
+  full_access
+
+  @@map("api_key_scope")
+}
+
+enum Channel {
+  email
+  sms
+
+  @@map("channel")
+}
+
+enum MessageStatus {
+  queued
+  sent
+  delivered
+  bounced
+  failed
+  suppressed
+
+  @@map("message_status")
+}
+
+enum SuppressionReason {
+  bounced
+  complained
+  unsubscribed
+
+  @@map("suppression_reason")
+}
+
+enum WebhookDeliveryStatus {
+  pending
+  delivered
+  failed
+
+  @@map("webhook_delivery_status")
+}
+
+model Account {
+  uuid      String        @id @default(uuid()) @db.Uuid
+  name      String        @db.VarChar(255)
+  status    AccountStatus @default(active)
+  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  apiKeys          ApiKey[]
+  messages         Message[]
+  suppressions     Suppression[]
+  idempotencyKeys  IdempotencyKey[]
+  webhookEndpoints WebhookEndpoint[]
+  events           Event[]
+
+  @@map("accounts")
+}
+
+model ApiKey {
+  uuid       String      @id @default(uuid()) @db.Uuid
+  accountId  String      @map("account_id") @db.Uuid
+  keyHash    String      @unique @map("key_hash") @db.VarChar(64)
+  scope      ApiKeyScope @default(full_access)
+  lastUsedAt DateTime?   @map("last_used_at") @db.Timestamptz
+  createdAt  DateTime    @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime    @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  account Account @relation(fields: [accountId], references: [uuid])
+
+  @@index([accountId])
+  @@map("api_keys")
+}
+
+model Message {
+  uuid               String        @id @default(uuid()) @db.Uuid
+  accountId          String        @map("account_id") @db.Uuid
+  channel            Channel
+  toAddress          String        @map("to_address") @db.Text
+  fromAddress        String        @map("from_address") @db.Text
+  subject            String?       @db.Text
+  body               String        @db.Text
+  status             MessageStatus @default(queued)
+  providerMessageId  String        @default(uuid()) @map("provider_message_id") @db.Uuid
+  createdAt          DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  account Account @relation(fields: [accountId], references: [uuid])
+
+  @@index([accountId])
+  @@map("messages")
+}
+
+model Suppression {
+  uuid      String            @id @default(uuid()) @db.Uuid
+  accountId String            @map("account_id") @db.Uuid
+  channel   Channel
+  address   String            @db.Text
+  reason    SuppressionReason
+  createdAt DateTime          @default(now()) @map("created_at") @db.Timestamptz
+
+  account Account @relation(fields: [accountId], references: [uuid])
+
+  @@unique([accountId, channel, address])
+  @@map("suppressions")
+}
+
+model IdempotencyKey {
+  uuid           String   @id @default(uuid()) @db.Uuid
+  accountId      String   @map("account_id") @db.Uuid
+  key            String   @db.VarChar(255)
+  requestHash    String   @map("request_hash") @db.VarChar(64)
+  responseStatus Int?     @map("response_status")
+  responseBody   Bytes?   @map("response_body")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  account Account @relation(fields: [accountId], references: [uuid])
+
+  @@unique([accountId, key])
+  @@map("idempotency_keys")
+}
+
+model WebhookEndpoint {
+  uuid      String   @id @default(uuid()) @db.Uuid
+  accountId String   @map("account_id") @db.Uuid
+  url       String   @db.Text
+  secret    String   @db.VarChar(64)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  account   Account            @relation(fields: [accountId], references: [uuid])
+  deliveries WebhookDelivery[]
+
+  @@index([accountId])
+  @@map("webhook_endpoints")
+}
+
+model Event {
+  uuid       String   @id @default(uuid()) @db.Uuid
+  accountId  String   @map("account_id") @db.Uuid
+  type       String   @db.VarChar(64)
+  resourceId String   @map("resource_id") @db.Uuid
+  payload    Json
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  account    Account           @relation(fields: [accountId], references: [uuid])
+  deliveries WebhookDelivery[]
+
+  @@index([accountId])
+  @@index([resourceId])
+  @@map("events")
+}
+
+model WebhookDelivery {
+  uuid       String                 @id @default(uuid()) @db.Uuid
+  endpointId String                 @map("endpoint_id") @db.Uuid
+  eventId    String                 @map("event_id") @db.Uuid
+  attempts   Int                    @default(0)
+  status     WebhookDeliveryStatus  @default(pending)
+  createdAt  DateTime               @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime               @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  endpoint WebhookEndpoint @relation(fields: [endpointId], references: [uuid])
+  event    Event           @relation(fields: [eventId], references: [uuid])
+
+  @@index([endpointId])
+  @@index([eventId])
+  @@map("webhook_deliveries")
+}

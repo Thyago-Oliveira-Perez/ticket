@@ -18,6 +18,25 @@ services:
       - ticket-net
     restart: unless-stopped
 
+  # --- Notification provider ---
+
+  notification:
+    build:
+      context: ./notification
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      ADDR: "0.0.0.0"
+      PORT: "3000"
+      DB_DSN: "postgres://notification:secret@notification-db:5432/notification?sslmode=disable"
+    depends_on:
+      notification-db:
+        condition: service_healthy
+    networks:
+      - ticket-net
+    restart: unless-stopped
+
 
   # --- Infrastructure ---
 
@@ -34,6 +53,26 @@ services:
       - postgresql-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U nubrank -d nubrank"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ticket-net
+    restart: unless-stopped
+
+  # notification database
+  notification-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: notification
+      POSTGRES_USER: notification
+      POSTGRES_PASSWORD: secret
+    ports:
+      - "5433:5432"
+    volumes:
+      - notification-postgresql-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notification -d notification"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -118,6 +157,7 @@ services:
 
 volumes:
   postgresql-data:
+  notification-postgresql-data:
   mysql-data:
   redis-data:
   rabbitmq-data:
