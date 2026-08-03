@@ -11,6 +11,12 @@ import { registerWebhookEndpointRoutes } from "./modules/webhookEndpoints/routes
 import { PrismaSuppressionRepository } from "./modules/suppressions/repository.js";
 import { SuppressionServiceImpl } from "./modules/suppressions/service.js";
 import { registerSuppressionRoutes } from "./modules/suppressions/routes.js";
+import { PrismaEventsRepository } from "./modules/events/repository.js";
+import { EventPublisherImpl } from "./modules/events/publisher.js";
+import { HttpWebhookSender } from "./modules/webhookDelivery/sender.js";
+import { PrismaMessageRepository } from "./modules/messages/repository.js";
+import { MessageServiceImpl } from "./modules/messages/service.js";
+import { registerMessageRoutes } from "./modules/messages/routes.js";
 import { registerAuth } from "./plugins/auth.js";
 import { registerChaos } from "./plugins/chaos.js";
 import { PrismaIdempotencyRepository, registerIdempotency } from "./plugins/idempotency.js";
@@ -47,11 +53,19 @@ export function buildApp(config: Config, prisma: PrismaClient): FastifyInstance 
   const suppressionRepo = new PrismaSuppressionRepository(prisma);
   const suppressionService = new SuppressionServiceImpl(suppressionRepo);
 
+  const eventsRepo = new PrismaEventsRepository(prisma);
+  const webhookSender = new HttpWebhookSender(config.webhookChaos);
+  const eventPublisher = new EventPublisherImpl(eventsRepo, webhookEndpointRepo, webhookSender);
+
+  const messageRepo = new PrismaMessageRepository(prisma);
+  const messageService = new MessageServiceImpl(prisma, messageRepo, suppressionRepo, eventPublisher, config.messageChaos);
+
   registerAuth(app, accountService);
   registerIdempotency(app, idempotencyRepo);
   registerAccountRoutes(app, accountService);
   registerWebhookEndpointRoutes(app, webhookEndpointService);
   registerSuppressionRoutes(app, suppressionService);
+  registerMessageRoutes(app, messageService, idempotencyRepo);
 
   return app;
 }

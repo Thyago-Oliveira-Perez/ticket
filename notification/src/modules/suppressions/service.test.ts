@@ -2,8 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type { Channel, Suppression, SuppressionReason } from "@prisma/client";
+import type { Db } from "../../lib/prisma.js";
 import type { SuppressionRepository } from "./repository.js";
 import { SuppressionServiceImpl } from "./service.js";
+
+const fakeDb = {} as Db;
 
 class FakeSuppressionRepository implements SuppressionRepository {
   suppressions: Suppression[] = [];
@@ -12,7 +15,7 @@ class FakeSuppressionRepository implements SuppressionRepository {
     return this.suppressions.some((s) => s.accountId === accountId && s.channel === channel && s.address === address);
   }
 
-  async upsert(accountId: string, channel: Channel, address: string, reason: SuppressionReason): Promise<Suppression> {
+  async upsert(_db: Db, accountId: string, channel: Channel, address: string, reason: SuppressionReason): Promise<Suppression> {
     const existing = this.suppressions.find(
       (s) => s.accountId === accountId && s.channel === channel && s.address === address,
     );
@@ -31,8 +34,8 @@ class FakeSuppressionRepository implements SuppressionRepository {
 test("upsert is idempotent for the same (account, channel, address)", async () => {
   const repo = new FakeSuppressionRepository();
 
-  const first = await repo.upsert("acc-1", "email", "bounced@example.com", "bounced");
-  const second = await repo.upsert("acc-1", "email", "bounced@example.com", "complained");
+  const first = await repo.upsert(fakeDb, "acc-1", "email", "bounced@example.com", "bounced");
+  const second = await repo.upsert(fakeDb, "acc-1", "email", "bounced@example.com", "complained");
 
   assert.equal(first.uuid, second.uuid);
   assert.equal(second.reason, "bounced");
@@ -41,8 +44,8 @@ test("upsert is idempotent for the same (account, channel, address)", async () =
 
 test("listByAccount scopes to the account", async () => {
   const repo = new FakeSuppressionRepository();
-  await repo.upsert("acc-1", "email", "a@example.com", "bounced");
-  await repo.upsert("acc-2", "email", "b@example.com", "bounced");
+  await repo.upsert(fakeDb, "acc-1", "email", "a@example.com", "bounced");
+  await repo.upsert(fakeDb, "acc-2", "email", "b@example.com", "bounced");
 
   const service = new SuppressionServiceImpl(repo);
   const list = await service.listByAccount("acc-1");
