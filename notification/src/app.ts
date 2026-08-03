@@ -8,6 +8,9 @@ import { registerAccountRoutes } from "./modules/accounts/routes.js";
 import { PrismaWebhookEndpointRepository } from "./modules/webhookEndpoints/repository.js";
 import { WebhookEndpointServiceImpl } from "./modules/webhookEndpoints/service.js";
 import { registerWebhookEndpointRoutes } from "./modules/webhookEndpoints/routes.js";
+import { PrismaSuppressionRepository } from "./modules/suppressions/repository.js";
+import { SuppressionServiceImpl } from "./modules/suppressions/service.js";
+import { registerSuppressionRoutes } from "./modules/suppressions/routes.js";
 import { registerAuth } from "./plugins/auth.js";
 import { registerChaos } from "./plugins/chaos.js";
 import { PrismaIdempotencyRepository, registerIdempotency } from "./plugins/idempotency.js";
@@ -41,10 +44,14 @@ export function buildApp(config: Config, prisma: PrismaClient): FastifyInstance 
   const webhookEndpointRepo = new PrismaWebhookEndpointRepository(prisma);
   const webhookEndpointService = new WebhookEndpointServiceImpl(webhookEndpointRepo);
 
+  const suppressionRepo = new PrismaSuppressionRepository(prisma);
+  const suppressionService = new SuppressionServiceImpl(suppressionRepo);
+
   registerAuth(app, accountService);
   registerIdempotency(app, idempotencyRepo);
   registerAccountRoutes(app, accountService);
   registerWebhookEndpointRoutes(app, webhookEndpointService);
+  registerSuppressionRoutes(app, suppressionService);
 
   return app;
 }
