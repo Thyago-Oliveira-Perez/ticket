@@ -5,6 +5,9 @@ import { statusForError } from "./lib/errors.js";
 import { PrismaAccountRepository } from "./modules/accounts/repository.js";
 import { AccountServiceImpl } from "./modules/accounts/service.js";
 import { registerAccountRoutes } from "./modules/accounts/routes.js";
+import { PrismaWebhookEndpointRepository } from "./modules/webhookEndpoints/repository.js";
+import { WebhookEndpointServiceImpl } from "./modules/webhookEndpoints/service.js";
+import { registerWebhookEndpointRoutes } from "./modules/webhookEndpoints/routes.js";
 import { registerAuth } from "./plugins/auth.js";
 import { registerChaos } from "./plugins/chaos.js";
 import { PrismaIdempotencyRepository, registerIdempotency } from "./plugins/idempotency.js";
@@ -35,9 +38,13 @@ export function buildApp(config: Config, prisma: PrismaClient): FastifyInstance 
   const accountService = new AccountServiceImpl(accountRepo);
   const idempotencyRepo = new PrismaIdempotencyRepository(prisma);
 
+  const webhookEndpointRepo = new PrismaWebhookEndpointRepository(prisma);
+  const webhookEndpointService = new WebhookEndpointServiceImpl(webhookEndpointRepo);
+
   registerAuth(app, accountService);
   registerIdempotency(app, idempotencyRepo);
   registerAccountRoutes(app, accountService);
+  registerWebhookEndpointRoutes(app, webhookEndpointService);
 
   return app;
 }
