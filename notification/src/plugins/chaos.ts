@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ChaosConfig } from "../config.js";
 
-type Hook = (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+type Hook = (request: FastifyRequest, reply: FastifyReply) => Promise<void | FastifyReply>;
 
 function randomDurationMs(min: number, max: number): number {
   if (max <= min) return min;
@@ -25,7 +25,7 @@ export function randomErrorHook(cfg: Pick<ChaosConfig, "errorRate">): Hook {
   return async (_request, reply) => {
     if (cfg.errorRate <= 0) return;
     if (Math.random() < cfg.errorRate) {
-      reply.code(500).send({ error: "internal server error" });
+      return reply.code(500).send({ error: "internal server error" });
     }
   };
 }
@@ -78,7 +78,7 @@ export function rateLimitHook(cfg: Pick<ChaosConfig, "rateLimitRps" | "rateLimit
 
   return async (request, reply) => {
     if (!limiter.allow(request.ip)) {
-      reply.code(429).send({ error: "rate limit exceeded" });
+      return reply.code(429).send({ error: "rate limit exceeded" });
     }
   };
 }

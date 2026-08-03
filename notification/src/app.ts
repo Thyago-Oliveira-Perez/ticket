@@ -7,6 +7,7 @@ import { AccountServiceImpl } from "./modules/accounts/service.js";
 import { registerAccountRoutes } from "./modules/accounts/routes.js";
 import { registerAuth } from "./plugins/auth.js";
 import { registerChaos } from "./plugins/chaos.js";
+import { PrismaIdempotencyRepository, registerIdempotency } from "./plugins/idempotency.js";
 
 function hasClientStatusCode(err: Error): err is FastifyError {
   const status = (err as Partial<FastifyError>).statusCode;
@@ -32,8 +33,10 @@ export function buildApp(config: Config, prisma: PrismaClient): FastifyInstance 
 
   const accountRepo = new PrismaAccountRepository(prisma);
   const accountService = new AccountServiceImpl(accountRepo);
+  const idempotencyRepo = new PrismaIdempotencyRepository(prisma);
 
   registerAuth(app, accountService);
+  registerIdempotency(app, idempotencyRepo);
   registerAccountRoutes(app, accountService);
 
   return app;

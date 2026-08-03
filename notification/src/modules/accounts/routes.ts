@@ -15,6 +15,6 @@ function serializeAccount(account: Account) {
 export function registerAccountRoutes(app: FastifyInstance, service: AccountService): void {
   app.post<{ Body: { name?: string } }>("/accounts", async (request, reply) => {
     const { account, apiKey } = await service.createAccount(request.body?.name ?? "");
-    reply.code(201).send({ ...serializeAccount(account), api_key: apiKey });
+    return reply.code(201).send({ ...serializeAccount(account), api_key: apiKey });
   });
 }
