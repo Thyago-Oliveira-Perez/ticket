@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import { prisma } from "./lib/prisma.js";
 
 const config = loadConfig();
 
@@ -11,7 +12,7 @@ if (config.dbDsn) {
   });
 }
 
-const app = buildApp(config);
+const app = buildApp(config, prisma);
 
 app
   .listen({ host: config.addr, port: config.port })
